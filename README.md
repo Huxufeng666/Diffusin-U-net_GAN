@@ -51,10 +51,32 @@ conda activate diffgan
 pip install -r requirements.txt
 ```
 
-### 2️⃣ 训练模型
+### 2️⃣ 训练模型（支持多种模式）
 
+🧪 使用命令：
+
+✅ 1. 单独训练 diffusion 模型
 ```bash
-python train.py --config config.yaml
+python train.py --train_mode diffusion_only
+```
+
+✅ 2. 单独训练 U-Net（不加载 diffusion 模块）
+```bash
+python train.py --train_mode unet_only
+```
+可选参数：加载预训练 U-Net：
+```bash
+--unet_ckpt weights/unet_only/unet_epoch_50.pth
+```
+
+✅ 3. 冻结 diffusion，训练 U-Net
+```bash
+python train.py --train_mode finetune_unet --diffusion_ckpt weights/diffusion/diffusion_epoch_100.pth
+```
+
+✅ 4. 先训练 diffusion，再自动训练 U-Net
+```bash
+python train.py --train_mode full_pipeline
 ```
 
 ### 3️⃣ 测试与分割展示
@@ -63,33 +85,7 @@ python train.py --config config.yaml
 python predict.py --image sample.png
 ```
 
-<!-- --- -->
-<!-- 
-## 📊 实验结果
-
-| 模型      | 准确率 | 召回率 | mAP@0.5 |
-|-----------|--------|--------|---------|
-| YOLOv5    | 92.6%  | 90.1%  | 93.2%   |
-| 本项目（Diff + U-Net + GAN）| **94.3%** | **92.5%** | **95.6%** |
-
 ---
-
-## 🌐 可视化界面
-
-本系统提供网页仪表盘，实时展示识别结果、环境数据、历史曲线与预警信息。
-
-仪表盘界面示例：
-
-![Dashboard UI](docs/ui_dashboard.png)
-
----
-
-## 📦 数据来源
-
-- BUSI 数据集（乳腺超声）
-- 自采图像：树莓派+摄像头+环境传感器
-
---- -->
 
 ## 🙋‍♀️ 项目作者
 

@@ -840,8 +840,21 @@ class GaussianDiffusion(Module):
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
 
         img = self.normalize(img)
-        # return self.p_losses(img, t, *args, **kwargs)
-        return  img
+        
+        
+        current_epoch = kwargs.pop('epoch', 0)
+        
+        loss = self.p_losses(img, t, *args, **kwargs)
+        
+        if  current_epoch > 50 or current_epoch % 9 == 0:  # 第10、20、30、40、50次（从0开始）
+            img = self.unnormalize(img)
+            if img.dim() == 3:
+                img = img.unsqueeze(0)
+            return loss, img
+        else :
+            return loss,None
+            
+        
 
 # dataset classes
 

@@ -144,7 +144,7 @@ class EndToEndModel(nn.Module):
     
     def forward(self, image, mask):
         # Diffusion 模块：对图像进行背景模糊（突出肿瘤区域）
-        processed_image = self.diffusion(image, mask)
+        processed_image = self.diffusion(image, mask,)
         
         # proc_img = processed_image[0].cpu().detach()  # shape: [1, H, W]
         # proc_img = proc_img.squeeze(0)                # shape: [H, W]
@@ -162,7 +162,12 @@ class EndToEndModel(nn.Module):
         # save_path = os.path.join(save_dir, "processed_image.png")
         # proc_pil.save(save_path)
         # print(f"Processed image saved to: {save_path}")
-        # # U-Net 分割：对处理后的图像进行分割
+        # # U-Net 分割：对处理后的图像进行分割    if isinstance(result, tuple):
+        
+        if isinstance(processed_image,tuple):
+            processed_image = processed_image[1]  # 只取图像部分
+        else:
+            processed_image = processed_image
         
         segmentation = self.unet(processed_image)
         return processed_image, segmentation

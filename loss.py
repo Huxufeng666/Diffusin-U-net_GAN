@@ -36,7 +36,7 @@ class DiceLoss(nn.Module):
 
 # SSIM损失函数
 class SSIMLoss(nn.Module,):
-    def __init__(self, window_size=11, size_average=True):
+    def __init__(self, window_size=7, size_average=True):
         super().__init__()
         self.window_size = window_size
         self.size_average = size_average
@@ -95,77 +95,72 @@ class CombinedLoss(nn.Module):
 
 
 
-def plot_losses(csv_path, output_path='loss_curve.png'):
-    df = pd.read_csv(csv_path)
-
-    # 可选：过滤异常高的 Test Seg Loss（如 > 5）
-    df_filtered = df[df['Test Seg Loss'] < 5]
-
-    plt.figure(figsize=(12, 6))
-    plt.plot(df['epoch'], df['generator_loss'], label='Generator Loss')
-    plt.plot(df['epoch'], df['discriminator_loss'], label='Discriminator Loss')
-    plt.plot(df_filtered['epoch'], df_filtered['Test Seg Loss'], label='Test Seg Loss (filtered)', linestyle='--')
+def plot_losses(csv_file, save_path):
+    df = pd.read_csv(csv_file)
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(df['Epoch'], df['Train Loss'], label='Train Loss')
+    
+    if 'Test Loss' in df.columns:
+        plt.plot(df['Epoch'], df['Test Loss'], label='Test Loss')
 
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('Training Loss Curves')
+    plt.title('Training and Test Loss Curve')
     plt.legend()
     plt.grid(True)
-    plt.tight_layout()
-
-    # 保存图像
-    plt.savefig(output_path)
+    plt.savefig(save_path)
     plt.close()
     
+
 def plot_losses_2(csv_path, output_prefix='loss_curve'):
-    # 读取 CSV 数据
     df = pd.read_csv(csv_path)
-    
-    # 可选：过滤异常高的 Test Seg Loss（如 > 5）
-    df_filtered = df[df['Test Seg Loss'] < 5]
-    
-    # 1. 绘制 Generator Loss 曲线
-    plt.figure(figsize=(12, 6))
-    plt.plot(df['epoch'], df['generator_loss'], label='Generator Loss', color='blue')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Generator Loss Curve')
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    generator_path = f"{output_prefix}_generator.png"
-    plt.savefig(generator_path)
-    plt.close()
-    print(f"Generator loss curve saved to: {generator_path}")
-    
-    # 2. 绘制 Discriminator Loss 曲线
-    plt.figure(figsize=(12, 6))
-    plt.plot(df['epoch'], df['discriminator_loss'], label='Discriminator Loss', color='green')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Discriminator Loss Curve')
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    discriminator_path = f"{output_prefix}_discriminator.png"
-    plt.savefig(discriminator_path)
-    plt.close()
-    print(f"Discriminator loss curve saved to: {discriminator_path}")
-    
-    # 3. 绘制 Test Seg Loss 曲线
-    plt.figure(figsize=(12, 6))
-    plt.plot(df_filtered['epoch'], df_filtered['Test Seg Loss'], label='Test Seg Loss (filtered)', linestyle='--', color='red')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Test Seg Loss Curve')
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    test_seg_path = f"{output_prefix}_test_seg.png"
-    plt.savefig(test_seg_path)
-    plt.close()
-    print(f"Test segmentation loss curve saved to: {test_seg_path}")   
 
+    # 绘制 Generator Loss
+    if 'generator_loss' in df.columns:
+        plt.figure(figsize=(12, 6))
+        plt.plot(df['epoch'], df['generator_loss'], label='Generator Loss', color='blue')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Generator Loss Curve')
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        generator_path = f"{output_prefix}_generator.png"
+        plt.savefig(generator_path)
+        plt.close()
+        print(f"Generator loss curve saved to: {generator_path}")
+
+    # 绘制 Discriminator Loss
+    if 'discriminator_loss' in df.columns:
+        plt.figure(figsize=(12, 6))
+        plt.plot(df['epoch'], df['discriminator_loss'], label='Discriminator Loss', color='green')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Discriminator Loss Curve')
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        discriminator_path = f"{output_prefix}_discriminator.png"
+        plt.savefig(discriminator_path)
+        plt.close()
+        print(f"Discriminator loss curve saved to: {discriminator_path}")
+
+    # 绘制 Test Segmentation Loss（如果存在）
+    if 'Test Seg Loss' in df.columns:
+        df_filtered = df[df['Test Seg Loss'] < 5]  # 可选过滤
+        plt.figure(figsize=(12, 6))
+        plt.plot(df_filtered['epoch'], df_filtered['Test Seg Loss'], label='Test Seg Loss (filtered)', linestyle='--', color='red')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Test Segmentation Loss Curve')
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        test_seg_path = f"{output_prefix}_test_seg.png"
+        plt.savefig(test_seg_path)
+        plt.close()
+        print(f"Test segmentation loss curve saved to: {test_seg_path}")
 
 def compute_edge_from_mask(mask_tensor, threshold=0.5):
     """

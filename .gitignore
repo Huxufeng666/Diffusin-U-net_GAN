@@ -1,3 +1,11 @@
 weights
 Data
 result
+__pycache__/
+configs/__pycache__/
+*.pyc __pycache__/
+*.pyc
+denoising_diffusion/__pycache__/
+
+__pycache__/
+*.pyc

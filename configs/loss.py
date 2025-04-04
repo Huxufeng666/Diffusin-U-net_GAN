@@ -18,20 +18,41 @@ class BCEWithLogitsLoss(nn.Module):
 
 
 # Dice损失
-class DiceLoss(nn.Module):
+class DiceLoss_T(nn.Module):
+    def __init__(self, epsilon=1e-6):
+        super().__init__()
+        self.epsilon = epsilon  # 修复点：使用 self.epsilon 而不是 self.smooth
+
+    def forward(self, inputs, targets):
+        # Flatten the tensors
+        inputs = torch.sigmoid(inputs)
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+
+        intersection = torch.sum(inputs * targets)
+        union = torch.sum(inputs) + torch.sum(targets)
+        dice = (2. * intersection + self.epsilon) / (union + self.epsilon)
+
+        return 1 - dice
+    
+    
+    
+class DiceLoss_v(nn.Module):
     def __init__(self, epsilon=1e-6):
         super().__init__()
         self.epsilon = epsilon
 
     def forward(self, inputs, targets):
-        smooth = self.epsilon
-        # Flatten the tensors
+        # 使用 torch 张量运算，不需要 .astype()（这是 numpy 的方法）
+        inputs = torch.sigmoid(inputs)  # 如果未归一化要先 Sigmoid
         inputs = inputs.view(-1)
         targets = targets.view(-1)
-        intersection = torch.sum(inputs * targets)
-        union = torch.sum(inputs) + torch.sum(targets)
-        return 1 - (2. * intersection + smooth) / (union + smooth)
-    
+
+        intersection = (inputs * targets).sum()
+        union = inputs.sum() + targets.sum()
+        dice = (2. * intersection + self.epsilon) / (union + self.epsilon)
+
+        return  dice  # 损失越小越好        
     
 
 # SSIM损失函数
@@ -41,6 +62,8 @@ class SSIMLoss(nn.Module,):
         self.window_size = window_size
         self.size_average = size_average
         self.window = self.create_window(window_size)
+        self.window = self.window.expand(1, 1, self.window_size, self.window_size).contiguous()
+
 
     def create_window(self, window_size):
         device = torch.device("cuda" if torch.cuda.is_available() else 'cpu')
@@ -71,11 +94,37 @@ class SSIMLoss(nn.Module,):
 
 
 
+class BCEDiceLoss(nn.Module):
+    def __init__(self, weight=None, smooth=1e-6):
+        super(BCEDiceLoss, self).__init__()
+        self.bce_loss = nn.BCEWithLogitsLoss(weight=weight)
+        self.smooth = smooth
+
+    def forward(self, inputs, targets):
+        # BCE Loss
+        bce = self.bce_loss(inputs, targets)
+
+        # Dice Loss
+        inputs = torch.sigmoid(inputs)
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+
+        intersection = (inputs * targets).sum()
+        dice = (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
+        dice_loss = 1 - dice
+
+        # BCE + Dice Loss
+        total_loss = bce + dice_loss
+        return total_loss
+
+
+
+
 class CombinedLoss(nn.Module):
     def __init__(self, alpha=0.5, beta=0.5, gamma=0.5):
         super().__init__()
         self.bce_loss = BCEWithLogitsLoss()
-        self.dice_loss = DiceLoss()
+        self.dice_loss = DiceLoss_T()
         self.ssim_loss = SSIMLoss()
         self.alpha = alpha  # 权重系数，用于调节BCE与Dice损失的平衡
         self.beta = beta  # 权重系数，用于调节SSIM损失的影响
@@ -93,6 +142,27 @@ class CombinedLoss(nn.Module):
 
 
 
+def dice_coefficient(pred, target, smooth=1e-6):
+    """
+    计算两个二值图像之间的Dice系数。
+
+    Args:
+        pred (np.ndarray): 预测结果二值图 (numpy数组, shape: H x W 或 B x H x W)。
+        target (np.ndarray): 真实掩码二值图 (numpy数组, shape: 同pred相同)。
+        smooth (float): 防止分母为0的平滑项。
+
+    Returns:
+        float: Dice系数，范围[0, 1]。
+    """
+    pred_flat = pred.flatten()
+    target_flat = target.flatten()
+
+    intersection = np.sum(pred_flat * target_flat)
+    dice = (2. * intersection + smooth) / (np.sum(pred_flat) + np.sum(target_flat) + smooth)
+
+    return dice
+
+
 
 
 def plot_losses(csv_file, save_path):
@@ -103,6 +173,8 @@ def plot_losses(csv_file, save_path):
     
     if 'Test Loss' in df.columns:
         plt.plot(df['Epoch'], df['Test Loss'], label='Test Loss')
+    # if 'Dice' in df.columns:
+    #     plt.plot(df['Epoch'], df['Dice'], label='Dice Coefficient', linestyle='--') 
 
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
@@ -111,7 +183,65 @@ def plot_losses(csv_file, save_path):
     plt.grid(True)
     plt.savefig(save_path)
     plt.close()
-    
+
+
+
+def  plot_losses_pros(csv_path, save_path):
+    """
+    从CSV文件中绘制训练损失、测试损失和Dice系数。
+
+    Args:
+        csv_path (str): CSV文件路径。
+        save_path (str): 图像保存路径。
+    """
+    # 加载数据
+    df = pd.read_csv(csv_path)
+
+    # 创建大画布与子画布
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    # 绘制训练损失
+    axes[0].plot(df['Epoch'], df['Train Loss'], color='blue', label='Train Loss')
+    axes[0].set_title('Train Loss')
+    axes[0].set_xlabel('Epoch')
+    axes[0].set_ylabel('Loss')
+    axes[0].legend()
+    axes[0].grid(True)
+
+    # 绘制测试损失（若存在）
+    if 'Test Loss' in df.columns:
+        axes[1].plot(df['Epoch'], df['Test Loss'], color='green', label='Test Loss')
+        axes[1].set_title('Test Loss')
+        axes[1].set_xlabel('Epoch')
+        axes[1].set_ylabel('Loss')
+        axes[1].legend()
+        axes[1].grid(True)
+    else:
+        axes[1].set_visible(False)
+
+    # 绘制Dice系数（若存在）
+    if 'Dice' in df.columns:
+        axes[2].plot(df['Epoch'], df['Dice'], color='red', linestyle='--', label='Dice Coefficient')
+        axes[2].set_title('Dice Coefficient')
+        axes[2].set_xlabel('Epoch')
+        axes[2].set_ylabel('Dice')
+        axes[2].legend()
+        axes[2].grid(True)
+    else:
+        axes[2].set_visible(False)
+
+    # 整体标题与布局优化
+    plt.suptitle('Training Metrics Overview', fontsize=16)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+    # 保存图像
+    plt.savefig(save_path, dpi=300)
+    plt.show()
+    plt.close()
+
+
+
+
 
 def plot_losses_2(csv_path, output_prefix='loss_curve'):
     df = pd.read_csv(csv_path)
@@ -161,6 +291,8 @@ def plot_losses_2(csv_path, output_prefix='loss_curve'):
         plt.savefig(test_seg_path)
         plt.close()
         print(f"Test segmentation loss curve saved to: {test_seg_path}")
+        
+
 
 def compute_edge_from_mask(mask_tensor, threshold=0.5):
     """

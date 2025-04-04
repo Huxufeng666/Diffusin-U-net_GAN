@@ -2,7 +2,7 @@ import argparse
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from data import MedicalDataset, UltrasoundDataset
+from data import MedicalDataset, UltrasoundDataset, BUSDataset
 import torch.optim as optim
 import torch.nn as nn
 from Discrimintor import Discriminator,ComplexDiscriminator_pro
@@ -11,37 +11,36 @@ import os
 import csv
 import datetime
 from tqdm import tqdm
-from loss import CombinedLoss, compute_edge_from_mask, plot_losses, plot_losses_2
+from configs.loss import CombinedLoss,  BCEDiceLoss, DiceLoss_T, DiceLoss_v,dice_coefficient, plot_losses, plot_losses_2,plot_losses_pros
 import torch.nn.functional as F
-from monai.losses import HausdorffDTLoss
 from denoising_diffusion import GaussianDiffusion
 from UNet import UNet, UNets
 from torchvision.utils import save_image
 from configs.save_diffusion_comparison import save_diffusion_comparison
 # from torchvision.utils import save_image
 
+import numpy as np
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Diffusion + U-Net Model")
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--epochs', type=int, default=200)
-    parser.add_argument('--lr', type=float, default=0.00001)
+    parser.add_argument('--lr', type=float, default=0.0001)
     parser.add_argument('--size', type=int, default=256)
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
-    parser.add_argument('--data_path', type=str, default='/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUS-UCLM/partitions')
+    parser.add_argument('--data_path', type=str, default='/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUSI')
     parser.add_argument('--weights_dir', type=str, default='weights')
-    parser.add_argument('--train_mode', type=str, default='finetune_unet', choices=['diffusion_only', 'finetune_unet', 'unet_only', 'full_pipeline'])
+    parser.add_argument('--train_mode', type=str, default='unet_only', choices=['diffusion_only', 'finetune_unet', 'unet_only', 'full_pipeline'])
     parser.add_argument('--unet_ckpt', type=str, default="", help='Path to U-Net pretrained weights')
-    parser.add_argument('--diffusion_ckpt', type=str, default='weights/2025-04-03 10:12:37/diffusion/diffusion_epoch_100.pth', help='Path to diffusion model checkpoint')
+    parser.add_argument('--diffusion_ckpt', type=str, default='', help='Path to diffusion model checkpoint')
     return parser.parse_args()
-
-
 
 
 def train_diffusion(args, device):
     
     now = datetime.datetime.now()
     formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
-    weights_dir = os.path.join(args.weights_dir, formatted_time)
+    weights_dir = os.path.join(args.weights_dir, formatted_time,"diffusion")
     os.makedirs(weights_dir, exist_ok=True)
     
     
@@ -155,7 +154,7 @@ def train_unet(args, device):
     
     now = datetime.datetime.now()
     formatted_time = now.strftime("%Y-%m-%d_%H-%M-%S")
-    weights_dir = os.path.join(args.weights_dir, formatted_time)
+    weights_dir = os.path.join(args.weights_dir, formatted_time +"_U-net")
     os.makedirs(weights_dir, exist_ok=True)
 
     csv_file = os.path.join(weights_dir, "training_unet_log.csv")
@@ -165,16 +164,22 @@ def train_unet(args, device):
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5])
     ])
+    
+    mask_transform = transforms.Compose([
+    transforms.Resize((256, 256)),
+    transforms.ToTensor(),                  # 不归一化！只转成 [0, 1]
+    transforms.Lambda(lambda x: (x > 0.5).float())  # 二值化（0 or 1）
+    ])
 
-    train_dataset = UltrasoundDataset(
+    train_dataset =MedicalDataset(
         image_dir=os.path.join(args.data_path, 'train', 'images'),
         mask_dir=os.path.join(args.data_path, 'train', 'masks'),
         transform=transform)
 
-    test_dataset = UltrasoundDataset(
+    test_dataset = MedicalDataset(
         image_dir=os.path.join(args.data_path, 'test', 'images'),
         mask_dir=os.path.join(args.data_path, 'test', 'masks'),
-        transform=transform)
+        transform=mask_transform)
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
@@ -184,7 +189,8 @@ def train_unet(args, device):
         print("[INFO] Loading pretrained U-Net weights...")
         model.load_state_dict(torch.load(args.unet_ckpt, map_location=device))
 
-    criterion = CombinedLoss()
+    criterion_t = CombinedLoss()
+    criterion_v = CombinedLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     save_dir = os.path.join(weights_dir, 'unet_only')
@@ -193,8 +199,8 @@ def train_unet(args, device):
     # 初始化CSV文件记录头
     with open(csv_file, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['Epoch', 'Train Loss', 'Test Loss'])
-
+        writer.writerow(['Epoch', 'Train Loss', 'Test Loss','Dice'])
+        
     for epoch in range(args.epochs):
         model.train()
         train_loss = 0.0
@@ -202,45 +208,57 @@ def train_unet(args, device):
         for images, masks in tqdm(train_loader):
             images, masks = images.to(device), masks.to(device)
 
+            masks = masks.float()
+            masks = torch.clamp(masks, 0., 1.)
             preds = model(images)
-            loss = criterion(preds, masks)
+            preds = torch.sigmoid(preds)
+            # preds =  (preds> 0.5).float()
+            loss = criterion_t(preds, masks)
+            
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
             train_loss += loss.item()
 
         avg_train_loss = train_loss / len(train_loader)
-
-        # 测试阶段
+        
+        
+        # print("images",images.shape, images.min(), images.max())   # 应该是 [1, H, W]，[-1, 1] 范围
+        # print("masks",masks.shape, masks.min(), masks.max()) # 应该是 [1, H, W]，只有 0 和 1
+        # print("preds", preds.shape, preds.min().item(), preds.max().item())
+        
+        # 测试评估
         model.eval()
         test_loss = 0.0
+        dice_scores = []
+
         with torch.no_grad():
             for images, masks in test_loader:
                 images, masks = images.to(device), masks.to(device)
-
-                preds = model(images)
-                loss_test = criterion(preds, masks)
+                preds = torch.sigmoid(model(images))
+                loss_test = criterion_v(preds, masks)
                 test_loss += loss_test.item()
 
+                preds_bin = (preds > 0.5).float()
+                dice = dice_coefficient(preds_bin.cpu().numpy(), masks.cpu().numpy())
+                dice_scores.append(dice)
+
         avg_test_loss = test_loss / len(test_loader)
+        avg_dice = np.mean(dice_scores)
 
-        print(f"[U-Net] Epoch [{epoch+1}/{args.epochs}] "
-              f"Train Loss: {avg_train_loss:.4f}, Test Loss: {avg_test_loss:.4f}")
+        # 日志与模型保存
+        print(f"Epoch [{epoch+1}/{args.epochs}] Train Loss: {avg_train_loss:.4f}, Test Loss: {avg_test_loss:.4f}, Dice: {avg_dice:.4f}")
+        torch.save(model.state_dict(), os.path.join(save_dir, f"unet_epoch_{epoch+1}_dice_{avg_dice:.4f}.pth"))
 
-        # 每个epoch保存模型
-        torch.save(model.state_dict(), os.path.join(save_dir, f"unet_epoch_{epoch+1}.pth"))
-
-        # 每个epoch记录损失到CSV文件中
         with open(csv_file, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch + 1, avg_train_loss, avg_test_loss])
+            writer.writerow([epoch + 1, avg_train_loss, avg_test_loss, avg_dice])
 
-        # 绘制损失曲线
-        plot_losses(csv_file, os.path.join(weights_dir, 'loss_curve.png'))
-           
-            
+        # 每次绘制最新损失和Dice曲线
+        plot_losses(csv_file, os.path.join(weights_dir, 'loss_curve_total.png'))
+        plot_losses_pros(csv_file, os.path.join(weights_dir, 'loss_curve.png'))
+
             
 def main():
     args = parse_args()

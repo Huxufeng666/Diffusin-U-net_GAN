@@ -1,4 +1,3 @@
-s
 # Diffusion-U-Net-GAN for Ultrasound Tumor Segmentation
 [📖 English Version → README_EN.md](README_EN.md)
 

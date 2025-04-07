@@ -1,4 +1,6 @@
+s
 # Diffusion-U-Net-GAN for Ultrasound Tumor Segmentation
+[📖 English Version → README_EN.md](README_EN.md)
 
 本项目基于扩散模型（Diffusion Model）结合 U-Net 和 GAN 判别器，用于超声图像中的肿瘤去噪与自动分割，适用于医学图像处理、智能诊断系统等场景。
 
@@ -15,11 +17,11 @@
 ---
 
 ## 🧱 系统结构
-<!-- 
+ 
 ```
 感知层 → 网络层 → 平台层 → 应用层
 图像采集 → WiFi+MQTT → 树莓派+云端 → 识别展示与预警
-``` -->
+``` 
 
 系统流程图：
 
@@ -98,3 +100,10 @@ python predict.py --image sample.png
 ## 📄 License
 
 本项目遵循 MIT 开源协议，欢迎使用、改进与引用。
+
+
+
+
+
+
+

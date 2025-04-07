@@ -9,9 +9,6 @@ This project integrates a **Diffusion Model**, **U-Net**, and **GAN Discriminato
 - ✅ Ultrasound image denoising (Diffusion)
 - ✅ Precise tumor region segmentation (U-Net)
 - ✅ Real/Fake image discrimination (GAN)
-- ✅ Cloud-based deployment with real-time result display
-- ✅ Support for environment data collection and alert notifications
-
 ---
 
 ## 🧱 System Architecture

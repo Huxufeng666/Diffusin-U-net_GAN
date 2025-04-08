@@ -2,7 +2,7 @@ import argparse
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from data import MedicalDataset, UltrasoundDataset, BUSDataset
+from data import MedicalDataset, BUSDataset,BUS_UCMDataset
 import torch.optim as optim
 import torch.nn as nn
 from Discrimintor import Discriminator,ComplexDiscriminator_pro
@@ -28,9 +28,9 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.0001)
     parser.add_argument('--size', type=int, default=256)
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
-    parser.add_argument('--data_path', type=str, default='/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUSI')
+    parser.add_argument('--data_path', type=str, default='/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUS-UCLM')
     parser.add_argument('--weights_dir', type=str, default='weights')
-    parser.add_argument('--train_mode', type=str, default='unet_only', choices=['diffusion_only', 'finetune_unet', 'unet_only', 'full_pipeline'])
+    parser.add_argument('--train_mode', type=str, default='diffusion_only', choices=['diffusion_only', 'finetune_unet', 'unet_only', 'full_pipeline'])
     parser.add_argument('--unet_ckpt', type=str, default="", help='Path to U-Net pretrained weights')
     parser.add_argument('--diffusion_ckpt', type=str, default='', help='Path to diffusion model checkpoint')
     return parser.parse_args()
@@ -46,15 +46,25 @@ def train_diffusion(args, device):
     
     csv_file = os.path.join(weights_dir, "training_diffusio_log.csv")
 
-    transform = transforms.Compose([
+    image_transform = transforms.Compose([
         transforms.Resize((args.size, args.size)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5])
     ])
-    train_dataset = UltrasoundDataset(
+    mask_transform = transforms.Compose([
+    transforms.Resize((256, 256)),
+    transforms.ToTensor(),                  # 不归一化！只转成 [0, 1]
+    transforms.Lambda(lambda x: (x > 0.5).float())  # 二值化（0 or 1）
+    ])
+    
+    train_dataset = BUS_UCMDataset(
         image_dir=os.path.join(args.data_path, 'train', 'images'),
         mask_dir=os.path.join(args.data_path, 'train', 'masks'),
-        transform=transform)
+        image_transform=image_transform,
+        mask_transform=mask_transform)
+    
+    
+    
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
 
     diffusion_model = GaussianDiffusion(

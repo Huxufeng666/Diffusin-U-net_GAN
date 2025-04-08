@@ -40,7 +40,7 @@ def train_diffusion(args, device):
     
     now = datetime.datetime.now()
     formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
-    weights_dir = os.path.join(args.weights_dir, formatted_time,"diffusion")
+    weights_dir = os.path.join(args.weights_dir, formatted_time+"diffusion")
     os.makedirs(weights_dir, exist_ok=True)
     
     
@@ -51,18 +51,17 @@ def train_diffusion(args, device):
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5])
     ])
+        
     mask_transform = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.ToTensor(),                  # 不归一化！只转成 [0, 1]
     transforms.Lambda(lambda x: (x > 0.5).float())  # 二值化（0 or 1）
     ])
-    
     train_dataset = BUS_UCMDataset(
         image_dir=os.path.join(args.data_path, 'train', 'images'),
         mask_dir=os.path.join(args.data_path, 'train', 'masks'),
         image_transform=image_transform,
         mask_transform=mask_transform)
-    
     
     
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
@@ -79,15 +78,20 @@ def train_diffusion(args, device):
         min_snr_gamma=5,
         immiscible=False
     ).to(device)
+    print('save weights dir: ', weights_dir)
+    # wrapped_model = Master_analyzer(diffusion_model, weights_dir, (1, 1, args.size, args.size))
 
     discriminator = ComplexDiscriminator_pro().to(device)
     criterion_gan = CombinedLoss(alpha=1.0, beta=1.0, gamma=0.2)
 
     optimizer = torch.optim.Adam(diffusion_model.parameters(), lr=args.lr)
     
-    optimizer_d = optim.AdamW(discriminator.parameters(), lr=args.lr, betas=(0.5, 0.999))
+    optimizer_d = optim.Adam(discriminator.parameters(), lr=args.lr, betas=(0.5, 0.999))
 
     print("[INFO] Starting diffusion training...")
+    
+    top_k = 5  # 保留前5名
+    top_checkpoints = []  # 格式: [(loss, path)]
     for epoch in range(100):  # 默认训练100个 epoch
         diffusion_model.train()
         discriminator.train()
@@ -126,6 +130,22 @@ def train_diffusion(args, device):
             loss_d.backward()
             optimizer_d.step()
             epoch_loss_d += loss_d.item()
+            
+            # ---------------------------
+            # 模型可视化
+            # # ---------------------------
+            # losses = []
+            # outputs = wrapped_model.forward_propagation(images)
+            
+
+            # #loss = F.cross_entropy(outputs[0], masks)
+            # loss = outputs[0]
+            # #print('--- try loss: ', loss)
+            # optimizer.zero_grad()
+            # wrapped_model.backward_propagation(loss, collect_grads = True, layer_inds = [0, 1, 2, 3, 4, 5, 6])
+            # optimizer.step()
+            # losses.append(loss.item())
+
              
   
         avg_gen_loss = epoch_loss_gen / len(train_loader)
@@ -144,7 +164,17 @@ def train_diffusion(args, device):
 
         save_dir = os.path.join(weights_dir, 'diffusion')
         os.makedirs(save_dir, exist_ok=True)
-        torch.save(diffusion_model.state_dict(), os.path.join(save_dir, f"diffusion_epoch_{epoch+1}.pth"))
+        model_path = os.path.join(save_dir, f"diffusion_epoch_{epoch+1}.pth")
+        torch.save(diffusion_model.state_dict(), model_path)
+
+        
+        top_checkpoints.append((avg_gen_loss, model_path))
+        top_checkpoints.sort(key=lambda x: x[0])
+        if len(top_checkpoints) > top_k:
+            worst_loss, worst_path = top_checkpoints.pop()
+            if os.path.exists(worst_path):
+                os.remove(worst_path)
+
         
         if gen_image is not None:
             gen_image = gen_image.detach().clamp(0, 1)
@@ -157,7 +187,6 @@ def train_diffusion(args, device):
 
 
         plot_losses_2(csv_file, os.path.join(weights_dir, 'loss_curve'))
-
 
             
 def train_unet(args, device):

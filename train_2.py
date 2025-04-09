@@ -2,7 +2,7 @@ import argparse
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from data import MedicalDataset, BUSDataset,BUS_UCMDataset
+from data import MedicalDataset, BUSDataset,BUS_UCMDataset,BUSIDataset
 import torch.optim as optim
 import torch.nn as nn
 from Discrimintor import Discriminator,ComplexDiscriminator_pro
@@ -16,9 +16,9 @@ import torch.nn.functional as F
 from denoising_diffusion import GaussianDiffusion
 from UNet import UNet, UNets
 from torchvision.utils import save_image
-from configs.save_diffusion_comparison import save_diffusion_comparison
+from configs.save_diffusion_comparison import save_diffusion_comparison,save_diffusion_comparison_2
 # from torchvision.utils import save_image
-
+from torchvision.utils import make_grid, save_image
 import numpy as np
 
 def parse_args():
@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.0001)
     parser.add_argument('--size', type=int, default=256)
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
-    parser.add_argument('--data_path', type=str, default='/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUS-UCLM')
+    parser.add_argument('--data_path', type=str, default='/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUSI')
     parser.add_argument('--weights_dir', type=str, default='weights')
     parser.add_argument('--train_mode', type=str, default='diffusion_only', choices=['diffusion_only', 'finetune_unet', 'unet_only', 'full_pipeline'])
     parser.add_argument('--unet_ckpt', type=str, default="", help='Path to U-Net pretrained weights')
@@ -36,14 +36,36 @@ def parse_args():
     return parser.parse_args()
 
 
+class EarlyStopper:
+    def __init__(self, patience=10, min_delta=1e-4):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+
+    def __call__(self, current_loss):
+        if self.best_loss is None:
+            self.best_loss = current_loss
+            return False
+
+        if current_loss < self.best_loss - self.min_delta:
+            self.best_loss = current_loss
+            self.counter = 0
+        else:
+            self.counter += 1
+
+        if self.counter >= self.patience:
+            self.early_stop = True
+
+        return self.early_stop
+
+# ========== Train Function ==========
 def train_diffusion(args, device):
-    
     now = datetime.datetime.now()
     formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
-    weights_dir = os.path.join(args.weights_dir, formatted_time+"diffusion")
+    weights_dir = os.path.join(args.weights_dir, formatted_time+"_Diffusion")
     os.makedirs(weights_dir, exist_ok=True)
-    
-    
     csv_file = os.path.join(weights_dir, "training_diffusio_log.csv")
 
     image_transform = transforms.Compose([
@@ -51,20 +73,24 @@ def train_diffusion(args, device):
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5])
     ])
-        
+
     mask_transform = transforms.Compose([
-    transforms.Resize((256, 256)),
-    transforms.ToTensor(),                  # 不归一化！只转成 [0, 1]
-    transforms.Lambda(lambda x: (x > 0.5).float())  # 二值化（0 or 1）
+        transforms.Resize((256, 256)),
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: (x > 0.5).float())
     ])
-    train_dataset = BUS_UCMDataset(
+
+    train_dataset = BUSIDataset(
         image_dir=os.path.join(args.data_path, 'train', 'images'),
         mask_dir=os.path.join(args.data_path, 'train', 'masks'),
         image_transform=image_transform,
         mask_transform=mask_transform)
-    
-    
+
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    sample_loader = DataLoader(train_dataset, batch_size=4, shuffle=False)
+    sample_iter = iter(sample_loader)
+    sample_images, sample_masks = next(sample_iter)
+    sample_images, sample_masks = sample_images.to(device), sample_masks.to(device)
 
     diffusion_model = GaussianDiffusion(
         model=ResNet(BasicBlock, [2, 2, 2, 2], num_classes=1),
@@ -78,21 +104,20 @@ def train_diffusion(args, device):
         min_snr_gamma=5,
         immiscible=False
     ).to(device)
-    print('save weights dir: ', weights_dir)
-    # wrapped_model = Master_analyzer(diffusion_model, weights_dir, (1, 1, args.size, args.size))
 
     discriminator = ComplexDiscriminator_pro().to(device)
     criterion_gan = CombinedLoss(alpha=1.0, beta=1.0, gamma=0.2)
 
     optimizer = torch.optim.Adam(diffusion_model.parameters(), lr=args.lr)
-    
-    optimizer_d = optim.Adam(discriminator.parameters(), lr=args.lr, betas=(0.5, 0.999))
+    optimizer_d = torch.optim.Adam(discriminator.parameters(), lr=args.lr, betas=(0.5, 0.999))
+
+    early_stopper = EarlyStopper(patience=10, min_delta=1e-4)
 
     print("[INFO] Starting diffusion training...")
-    
-    top_k = 5  # 保留前5名
-    top_checkpoints = []  # 格式: [(loss, path)]
-    for epoch in range(100):  # 默认训练100个 epoch
+    top_k = 5
+    top_checkpoints = []
+
+    for epoch in range(args.epochs):
         diffusion_model.train()
         discriminator.train()
         epoch_loss_gen = 0.0
@@ -106,21 +131,17 @@ def train_diffusion(args, device):
                 loss, gen_image = result
             else:
                 loss = result
-                gen_image = images  # fallback for visualization
-                
+                gen_image = images
+
             d_out_fake = discriminator(gen_image)
             gan_loss_gen = criterion_gan(d_out_fake, torch.ones_like(d_out_fake))
-
-            
             loss_total = loss + gan_loss_gen
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             epoch_loss_gen += loss_total.item()
 
-            # ---------------------------
-            # 判别器训练
-            # ---------------------------
             optimizer_d.zero_grad()
             d_out_real = discriminator(masks)
             d_loss_real = criterion_gan(d_out_real, torch.ones_like(d_out_real))
@@ -130,28 +151,11 @@ def train_diffusion(args, device):
             loss_d.backward()
             optimizer_d.step()
             epoch_loss_d += loss_d.item()
-            
-            # ---------------------------
-            # 模型可视化
-            # # ---------------------------
-            # losses = []
-            # outputs = wrapped_model.forward_propagation(images)
-            
 
-            # #loss = F.cross_entropy(outputs[0], masks)
-            # loss = outputs[0]
-            # #print('--- try loss: ', loss)
-            # optimizer.zero_grad()
-            # wrapped_model.backward_propagation(loss, collect_grads = True, layer_inds = [0, 1, 2, 3, 4, 5, 6])
-            # optimizer.step()
-            # losses.append(loss.item())
-
-             
-  
         avg_gen_loss = epoch_loss_gen / len(train_loader)
         avg_d_loss = epoch_loss_d / len(train_loader)
 
-        print(f"[Diffusion] Epoch {epoch+1}/100, Gen Loss: {avg_gen_loss:.4f}, Disc Loss: {avg_d_loss:.4f}")
+        print(f"[Diffusion] Epoch {epoch+1}/{args.epochs}, Gen Loss: {avg_gen_loss:.4f}, Disc Loss: {avg_d_loss:.4f}")
 
         if epoch == 0 and not os.path.exists(csv_file):
             with open(csv_file, 'w', newline='') as f:
@@ -167,7 +171,6 @@ def train_diffusion(args, device):
         model_path = os.path.join(save_dir, f"diffusion_epoch_{epoch+1}.pth")
         torch.save(diffusion_model.state_dict(), model_path)
 
-        
         top_checkpoints.append((avg_gen_loss, model_path))
         top_checkpoints.sort(key=lambda x: x[0])
         if len(top_checkpoints) > top_k:
@@ -175,19 +178,21 @@ def train_diffusion(args, device):
             if os.path.exists(worst_path):
                 os.remove(worst_path)
 
-        
-        if gen_image is not None:
-            gen_image = gen_image.detach().clamp(0, 1)
-            
-            save_dir = os.path.join(weights_dir, 'samples')
-            os.makedirs(save_dir, exist_ok=True)
-           
-            save_path = os.path.join(save_dir, f"comparison_epoch_{epoch+1}.png") 
-            save_diffusion_comparison(images, gen_image, masks, save_path, nrow=4)
-
+        if (epoch + 1) % 10 == 0 and gen_image is not None:
+            with torch.no_grad():
+                _, gen_vis = diffusion_model(sample_images, sample_masks)
+                gen_vis = gen_vis.detach().clamp(0, 1)
+                save_dir = os.path.join(weights_dir, 'samples')
+                os.makedirs(save_dir, exist_ok=True)
+                save_path = os.path.join(save_dir, f"comparison_fixed_epoch_{epoch+1}.png")
+                save_diffusion_comparison_2(sample_images, gen_vis, sample_masks, save_path, nrow=2)
 
         plot_losses_2(csv_file, os.path.join(weights_dir, 'loss_curve'))
 
+        # ========= 提前停止判断 =========
+        if early_stopper(avg_gen_loss):
+            print("[⛔] Early stopping triggered. Best loss:", early_stopper.best_loss)
+            break
             
 def train_unet(args, device):
     
@@ -198,7 +203,7 @@ def train_unet(args, device):
 
     csv_file = os.path.join(weights_dir, "training_unet_log.csv")
 
-    transform = transforms.Compose([
+    image_transform = transforms.Compose([
         transforms.Resize((args.size, args.size)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5])
@@ -210,15 +215,17 @@ def train_unet(args, device):
     transforms.Lambda(lambda x: (x > 0.5).float())  # 二值化（0 or 1）
     ])
 
-    train_dataset =MedicalDataset(
+    train_dataset =BUSIDataset(
         image_dir=os.path.join(args.data_path, 'train', 'images'),
         mask_dir=os.path.join(args.data_path, 'train', 'masks'),
-        transform=transform)
+            image_transform=image_transform,
+        mask_transform=mask_transform)
 
-    test_dataset = MedicalDataset(
+    test_dataset = BUSIDataset(
         image_dir=os.path.join(args.data_path, 'test', 'images'),
         mask_dir=os.path.join(args.data_path, 'test', 'masks'),
-        transform=mask_transform)
+        image_transform=image_transform,
+        mask_transform=mask_transform)
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)

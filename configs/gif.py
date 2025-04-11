@@ -46,3 +46,32 @@ def generate_grid_gif(image_folder, output_path, sample_count=4, duration=1.0):
     # 保存为 GIF
     imageio.mimsave(output_path, frames, duration=duration)
     print(f"[✅] Four-grid GIF saved to: {output_path}")
+
+
+
+def generate_individual_gifss(image_folder, output_folder, sample_count=4, duration=5):
+    """
+    为每个 sample 单独生成一个动态 GIF（显示其随 epoch 变化的预测图）
+    """
+    os.makedirs(output_folder, exist_ok=True)
+
+    for sample_id in range(1, sample_count + 1):
+        pattern = os.path.join(image_folder, f"pred_epoch*_sample{sample_id}.png")
+        sample_files = sorted(glob(pattern), key=lambda x: int(x.split("epoch")[1].split("_")[0]))
+
+        if not sample_files:
+            print(f"[⚠️] Sample {sample_id} 没有图像，跳过...")
+            continue
+
+        frames = []
+        base_size = None  # 用于统一尺寸
+        for img_path in sample_files:
+            img = Image.open(img_path).convert("RGB")
+            if base_size is None:
+                base_size = img.size  # 设置统一尺寸
+            img = img.resize(base_size)  # ⚠️ 关键：统一图像尺寸
+            frames.append(np.array(img))
+
+        gif_path = os.path.join(output_folder, f"sample{sample_id}.gif")
+        imageio.mimsave(gif_path, frames, duration=duration)
+        print(f"[✅] GIF saved: {gif_path}")

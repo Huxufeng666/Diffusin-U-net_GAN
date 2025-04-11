@@ -12,5 +12,5 @@ __pycache__/
 tt.py
 
 *__pycache__
-
+__pycache__/Discrimintor.cpython-38.pyc
 denoising_diffusion/__pycache__

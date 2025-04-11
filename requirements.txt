@@ -1,15 +1,13 @@
-accelerate==1.6.0
+accelerate
 BBDecoder==1.1.0
 certifi==2025.1.31
 charset-normalizer==3.4.1
 contourpy==1.3.0
 cycler==0.12.1
-einops==0.8.1
-ema-pytorch==0.7.7
 filelock==3.13.1
 fonttools==4.57.0
 fsspec==2024.6.1
-graphviz @ file:///croot/python-graphviz_1739534123233/work
+# graphviz @ file:///croot/python-graphviz_1739534123233/work
 huggingface-hub==0.30.1
 idna==3.10
 imageio==2.37.0
@@ -21,17 +19,6 @@ matplotlib==3.9.4
 mpmath==1.3.0
 networkx==3.2.1
 numpy==1.26.3
-nvidia-cublas-cu11==11.11.3.6
-nvidia-cuda-cupti-cu11==11.8.87
-nvidia-cuda-nvrtc-cu11==11.8.89
-nvidia-cuda-runtime-cu11==11.8.89
-nvidia-cudnn-cu11==9.1.0.70
-nvidia-cufft-cu11==10.9.0.58
-nvidia-curand-cu11==10.3.0.86
-nvidia-cusolver-cu11==11.4.1.48
-nvidia-cusparse-cu11==11.7.5.86
-nvidia-nccl-cu11==2.21.5
-nvidia-nvtx-cu11==11.8.86
 opencv-python==4.11.0.86
 packaging==24.2
 pandas==2.2.3
@@ -46,13 +33,15 @@ safetensors==0.5.3
 scipy==1.13.1
 six==1.17.0
 sympy==1.13.1
-torch==2.6.0+cu118
-torchaudio==2.6.0+cu118
-torchview==0.2.6
-torchvision==0.21.0+cu118
+torch
+torchaudio
+torchview
+torchvision
 tqdm==4.67.1
 triton==3.2.0
 typing_extensions==4.12.2
 tzdata==2025.2
 urllib3==2.3.0
 zipp==3.21.0
+einops
+ema_pytorch 

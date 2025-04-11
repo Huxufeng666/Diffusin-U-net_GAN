@@ -6,6 +6,143 @@ import cv2
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from torchvision import models
+
+# # VGG-based perceptual loss feature extractor
+# class VGGPerceptual(nn.Module):
+#     def __init__(self, layer_index=9):
+#         super().__init__()
+#         vgg = models.vgg16(pretrained=True).features[:layer_index]
+#         for param in vgg.parameters():
+#             param.requires_grad = False
+#         self.vgg = vgg
+
+#     def forward(self, x):
+#         if x.shape[1] == 1:
+#             x = x.repeat(1, 3, 1, 1)  # convert grayscale to 3-channel
+#         return self.vgg(x)
+    
+
+class VGGPerceptualLoss(nn.Module):
+    def __init__(self, layer_index=9):
+        super().__init__()
+        vgg = models.vgg16(pretrained=True).features[:layer_index]
+        for p in vgg.parameters():
+            p.requires_grad = False
+        self.vgg = vgg.eval()
+
+    def forward(self, x, y):
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
+            y = y.repeat(1, 3, 1, 1)
+        self.vgg = self.vgg.to(x.device)
+        fx = self.vgg(x)
+        fy = self.vgg(y)
+        return F.l1_loss(fx, fy)
+
+# Custom loss module for diffusion-style generation with diversity and structure constraints
+class CustomDiffusionLoss(nn.Module):
+    def __init__(self, lambda_diff=1.0, lambda_struct=0.5, lambda_diverse=0.3, lambda_gan=0.2):
+        super().__init__()
+        self.lambda_diff = lambda_diff
+        self.lambda_struct = lambda_struct
+        self.lambda_diverse = lambda_diverse
+        self.lambda_gan = lambda_gan
+
+        self.perceptual_net = VGGPerceptualLoss().to(torch.device("cuda" if torch.cuda.is_available() else "cpu")).eval()
+        self.mse = nn.MSELoss()
+        self.l1 = nn.L1Loss()
+        self.bce = nn.BCEWithLogitsLoss()
+
+    def perceptual_loss(self, x, y):
+        self.perceptual_net = self.perceptual_net.to(x.device)
+        fx = self.perceptual_net(x)
+        fy = self.perceptual_net(y)
+        return self.l1(fx, fy)
+
+    def forward(self, pred_noise, true_noise, gen_img, input_img, d_output_fake=None):
+        # 1. diffusion base loss
+        loss_diff = self.mse(pred_noise, true_noise)
+
+        # 2. structure-preserving loss (similar to input)
+        loss_struct = self.perceptual_loss(gen_img, input_img)
+
+        # 3. diversity loss (make image NOT like input)
+        loss_diverse = -loss_struct  # encourage difference
+
+        # 4. GAN loss (optional, if discriminator used)
+        if d_output_fake is not None:
+            loss_gan = self.bce(d_output_fake, torch.ones_like(d_output_fake))
+        else:
+            loss_gan = torch.tensor(0.0, device=gen_img.device)
+
+        # total
+        total = (
+            self.lambda_diff * loss_diff +
+            self.lambda_struct * loss_struct +
+            self.lambda_diverse * loss_diverse +
+            self.lambda_gan * loss_gan
+        )
+
+        return total, {
+            "loss_total": total.item(),
+            "loss_diff": loss_diff.item(),
+            "loss_struct": loss_struct.item(),
+            "loss_diverse": loss_diverse.item(),
+            "loss_gan": loss_gan.item() if isinstance(loss_gan, torch.Tensor) else 0.0
+        }
+
+
+
+
+
+
+ 
+class DiceLoss_v(nn.Module):
+    def __init__(self, epsilon=1e-6):
+        super().__init__()
+        self.epsilon = epsilon
+
+    def forward(self, inputs, targets):
+        # 使用 torch 张量运算，不需要 .astype()（这是 numpy 的方法）
+        inputs = torch.sigmoid(inputs)  # 如果未归一化要先 Sigmoid
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+
+        intersection = (inputs * targets).sum()
+        union = inputs.sum() + targets.sum()
+        dice = (2. * intersection + self.epsilon) / (union + self.epsilon)
+
+        return  dice  # 损失越小越好        
+    
+
+
+
+
+class BCEDiceLoss(nn.Module):
+    def __init__(self, weight=None, smooth=1e-6):
+        super(BCEDiceLoss, self).__init__()
+        self.bce_loss = nn.BCEWithLogitsLoss(weight=weight)
+        self.smooth = smooth
+
+    def forward(self, inputs, targets):
+        # BCE Loss
+        bce = self.bce_loss(inputs, targets)
+
+        # Dice Loss
+        inputs = torch.sigmoid(inputs)
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+
+        intersection = (inputs * targets).sum()
+        dice = (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
+        dice_loss = 1 - dice
+
+        # BCE + Dice Loss
+        total_loss = bce + dice_loss
+        return total_loss
+
+
 
 # BCE损失
 class BCEWithLogitsLoss(nn.Module):
@@ -35,34 +172,17 @@ class DiceLoss_T(nn.Module):
 
         return 1 - dice
     
-    
-    
-class DiceLoss_v(nn.Module):
-    def __init__(self, epsilon=1e-6):
-        super().__init__()
-        self.epsilon = epsilon
 
-    def forward(self, inputs, targets):
-        # 使用 torch 张量运算，不需要 .astype()（这是 numpy 的方法）
-        inputs = torch.sigmoid(inputs)  # 如果未归一化要先 Sigmoid
-        inputs = inputs.view(-1)
-        targets = targets.view(-1)
-
-        intersection = (inputs * targets).sum()
-        union = inputs.sum() + targets.sum()
-        dice = (2. * intersection + self.epsilon) / (union + self.epsilon)
-
-        return  dice  # 损失越小越好        
-    
-
-# SSIM损失函数
+ # SSIM损失函数
 class SSIMLoss(nn.Module,):
     def __init__(self, window_size=7, size_average=True):
         super().__init__()
         self.window_size = window_size
         self.size_average = size_average
+        window = self.create_window(window_size)
         self.window = self.create_window(window_size)
         self.window = self.window.expand(1, 1, self.window_size, self.window_size).contiguous()
+        # self.register_buffer("window", window)  # ✅ 注册为 buffer
 
 
     def create_window(self, window_size):
@@ -91,37 +211,10 @@ class SSIMLoss(nn.Module,):
         # SSIM公式
         ssim_map = ((2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)) / ((mu1**2 + mu2**2 + C1) * (sigma1_sq + sigma2_sq + C2))
         return 1 - ssim_map.mean() if self.size_average else 1 - ssim_map.mean(dim=1).mean(dim=1).mean(dim=1)
-
-
-
-class BCEDiceLoss(nn.Module):
-    def __init__(self, weight=None, smooth=1e-6):
-        super(BCEDiceLoss, self).__init__()
-        self.bce_loss = nn.BCEWithLogitsLoss(weight=weight)
-        self.smooth = smooth
-
-    def forward(self, inputs, targets):
-        # BCE Loss
-        bce = self.bce_loss(inputs, targets)
-
-        # Dice Loss
-        inputs = torch.sigmoid(inputs)
-        inputs = inputs.view(-1)
-        targets = targets.view(-1)
-
-        intersection = (inputs * targets).sum()
-        dice = (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
-        dice_loss = 1 - dice
-
-        # BCE + Dice Loss
-        total_loss = bce + dice_loss
-        return total_loss
-
-
-
+ 
 
 class CombinedLoss(nn.Module):
-    def __init__(self, alpha=0.5, beta=0.5, gamma=0.5):
+    def __init__(self, alpha=0.8, beta=0.3, gamma=0.5):
         super().__init__()
         self.bce_loss = BCEWithLogitsLoss()
         self.dice_loss = DiceLoss_T()
@@ -135,10 +228,44 @@ class CombinedLoss(nn.Module):
         bce = self.bce_loss(outputs, targets)
         dice = self.dice_loss(outputs, targets)
         ssim = self.ssim_loss(outputs, targets)
-
+        
         # 结合多个损失
         total_loss = self.alpha * bce + self.beta * dice + self.gamma * ssim
         return total_loss
+    
+   
+class CombinedLoss_pro(nn.Module):
+    def __init__(self, alpha=0.8, beta=0.3, gamma=0.5, delta=0.3):
+        super().__init__()
+        self.bce_loss = BCEWithLogitsLoss()
+        self.dice_loss = DiceLoss_T()
+        self.ssim_loss = SSIMLoss()
+        self.perceptual_loss = VGGPerceptualLoss()
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.delta = delta  # 新加的多样性损失权重
+
+    def forward(self, outputs, targets, input_img=None):
+        bce = self.bce_loss(outputs, targets)
+        dice = self.dice_loss(outputs, targets)
+        ssim = self.ssim_loss(outputs, targets)
+
+        # 感知差异损失（鼓励生成结果 ≠ 输入图）
+        if input_img is not None:
+            diversity = - self.perceptual_loss(outputs, input_img)  # 多样性损失
+        else:
+            diversity = 0.0
+
+        total_loss = self.alpha * bce + self.beta * dice + self.gamma * ssim + self.delta * diversity
+        return total_loss
+
+
+
+
+
+
+
 
 
 

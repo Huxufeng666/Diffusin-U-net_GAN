@@ -12,9 +12,9 @@ import torchvision.transforms.functional as F
 def parse_args():
     parser = argparse.ArgumentParser(description="Test trained U-Net model")
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
-    parser.add_argument('--unet_ckpt', type=str,  default='weights/2025-04-04_11-25-35_U-net/unet_only/unet_epoch_200_dice_0.2000.pth', help='Path to trained U-Net weights')
-    parser.add_argument('--image_path', type=str, default='/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUS-UCLM/partitions/test/images/ANFO_005.png', help='Path to test image')
-    parser.add_argument('--output_dir', type=str, default='weights/2025-04-03_13-57-13', help='Directory to save predictions')
+    parser.add_argument('--unet_ckpt', type=str,  default='weights/2025-04-11_10-10-59_U-net/unet_only/unet_epoch_32_dice_0.50.pth', help='Path to trained U-Net weights')
+    parser.add_argument('--image_path', type=str, default='sample/malignant.png', help='Path to test image')
+    parser.add_argument('--output_dir', type=str, default='./', help='Directory to save predictions')
     parser.add_argument('--size', type=int, default=256)
     return parser.parse_args()
 

@@ -6,7 +6,7 @@ import os
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from PIL import Image
-from data import UltrasoundDataset,MedicalDataset
+from data import BUSBRADataset,MedicalDataset,BUSIDataset,BUS_UCMDataset
 from UNet import UNets
 from tqdm import tqdm
 
@@ -41,9 +41,9 @@ def recall_score(pred, target, smooth=1e-6):
 def main():
     parser = argparse.ArgumentParser(description="Evaluate U-Net Model")
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
-    parser.add_argument('--unet_ckpt', type=str,  default="weights/2025-04-04_11-25-35_U-net/unet_only/unet_epoch_200_dice_0.2000.pth", help='Path to trained U-Net weights')
+    parser.add_argument('--unet_ckpt', type=str,  default="weights/2025-04-09_15-54-04_U-net/unet_only/unet_epoch_79_dice_0.5505.pth", help='Path to trained U-Net weights')
     parser.add_argument('--data_path', type=str, default="/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUSI", help='Path to dataset root directory')
-    parser.add_argument('--output_dir', type=str, default='weights/2025-04-04_11-25-35_U-net', help='Directory to save evaluation results')
+    parser.add_argument('--output_dir', type=str, default='weights/2025-04-09_15-54-04_U-net', help='Directory to save evaluation results')
     parser.add_argument('--size', type=int, default=256)
     args = parser.parse_args()
 
@@ -52,16 +52,24 @@ def main():
     model.load_state_dict(torch.load(args.unet_ckpt, map_location=device))
     model.eval()
 
-    transform = transforms.Compose([
+
+    image_transform = transforms.Compose([
         transforms.Resize((args.size, args.size)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5])
     ])
 
-    test_dataset = MedicalDataset(
+    mask_transform = transforms.Compose([
+        transforms.Resize((args.size, args.size)),
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: (x > 0.5).float())  # 二值化
+    ])
+
+    test_dataset = BUSIDataset(
         image_dir=os.path.join(args.data_path, 'test', 'images'),
         mask_dir=os.path.join(args.data_path, 'test', 'masks'),
-        transform=transform
+        image_transform=image_transform,
+        mask_transform=mask_transform
     )
 
     test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False)

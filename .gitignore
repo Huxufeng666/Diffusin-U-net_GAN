@@ -11,6 +11,4 @@ __pycache__/
 *.jpg
 tt.py
 
-*__pycache__
-__pycache__/Discrimintor.cpython-38.pyc
-denoising_diffusion/__pycache__
+__pycache__

@@ -7,3 +7,10 @@ configs/__pycache__/
 denoising_diffusion/__pycache__/
 __pycache__/
 *.pyc
+*.png
+*.jpg
+tt.py
+
+*__pycache__
+
+denoising_diffusion/__pycache__

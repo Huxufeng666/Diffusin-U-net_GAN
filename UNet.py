@@ -201,7 +201,7 @@ class OutConv(nn.Module):
         return self.conv(x)
     
 
-class UNets(nn.Module):
+class UNets(nn.Module,):
     def __init__(self, n_channels, n_classes, bilinear=False):
         super(UNets, self).__init__()
         self.n_channels = n_channels
@@ -237,10 +237,11 @@ class UNets(nn.Module):
 
 
 
+
 # --------------------- Attention Block ---------------------
-class SEBlock(nn.Module):
+class A_SEBlock(nn.Module):
     def __init__(self, in_channels, reduction=16):
-        super(SEBlock, self).__init__()
+        super(A_SEBlock, self).__init__()
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
             nn.Linear(in_channels, in_channels // reduction, bias=False),
@@ -256,9 +257,9 @@ class SEBlock(nn.Module):
         return x * y.expand_as(x)
 
 # --------------------- Residual Block ---------------------
-class ResidualBlock(nn.Module):
+class A_ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
-        super(ResidualBlock, self).__init__()
+        super(A_ResidualBlock, self).__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, 3, padding=1),
             nn.BatchNorm2d(out_channels),
@@ -273,24 +274,24 @@ class ResidualBlock(nn.Module):
         return self.relu(self.conv(x) + self.skip(x))
 
 # --------------------- Down, Up, Out ---------------------
-class Down(nn.Module):
+class A_Down(nn.Module):
     def __init__(self, in_channels, out_channels):
-        super(Down, self).__init__()
+        super(A_Down, self).__init__()
         self.pool = nn.MaxPool2d(2)
-        self.block = ResidualBlock(in_channels, out_channels)
+        self.block = A_ResidualBlock(in_channels, out_channels)
 
     def forward(self, x):
         return self.block(self.pool(x))
 
-class Up(nn.Module):
+class A_Up(nn.Module):
     def __init__(self, in_channels, out_channels, bilinear=True):
-        super(Up, self).__init__()
+        super(A_Up, self).__init__()
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         else:
             self.up = nn.ConvTranspose2d(in_channels // 2, in_channels // 2, 2, stride=2)
 
-        self.conv = ResidualBlock(in_channels, out_channels)
+        self.conv = A_ResidualBlock(in_channels, out_channels)
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
@@ -306,18 +307,18 @@ class Up(nn.Module):
 class AttentionResUNet(nn.Module):
     def __init__(self, in_channels=1, out_channels=1, bilinear=True):
         super().__init__()
-        self.in_conv = ResidualBlock(in_channels, 64)
-        self.down1 = Down(64, 128)
-        self.down2 = Down(128, 256)
-        self.down3 = Down(256, 512)
-        self.down4 = Down(512, 1024)
+        self.in_conv = A_ResidualBlock(in_channels, 64)
+        self.down1 = A_Down(64, 128)
+        self.down2 = A_Down(128, 256)
+        self.down3 = A_Down(256, 512)
+        self.down4 = A_Down(512, 1024)
 
-        self.se = SEBlock(1024)
+        self.se = A_SEBlock(1024)
 
-        self.up1 = Up(1024 + 512, 512, bilinear)
-        self.up2 = Up(512 + 256, 256, bilinear)
-        self.up3 = Up(256 + 128, 128, bilinear)
-        self.up4 = Up(128 + 64, 64, bilinear)
+        self.up1 = A_Up(1024 + 512, 512, bilinear)
+        self.up2 = A_Up(512 + 256, 256, bilinear)
+        self.up3 = A_Up(256 + 128, 128, bilinear)
+        self.up4 = A_Up(128 + 64, 64, bilinear)
 
         self.out_conv = nn.Conv2d(64, out_channels, 1)
 

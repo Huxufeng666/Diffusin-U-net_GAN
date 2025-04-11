@@ -1,5 +1,8 @@
 import math
 import copy
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
 from pathlib import Path
 from random import random
 from functools import partial
@@ -789,7 +792,8 @@ class GaussianDiffusion(Module):
 
     def p_losses(self, x_start, t, noise = None, offset_noise_strength = None):
         b, c, h, w = x_start.shape
-
+        # print('------ should be none: ', torch.min(noise), torch.max(noise))
+        noise = None
         noise = default(noise, lambda: torch.randn_like(x_start))
 
         # offset noise - https://www.crosslabs.org/blog/diffusion-with-offset-noise
@@ -801,8 +805,14 @@ class GaussianDiffusion(Module):
             noise += offset_noise_strength * rearrange(offset_noise, 'b c -> b c 1 1')
 
         # noise sample
-
+        # print('---image range: ', torch.min(x_start), torch.max(x_start))
+        # cv2.imwrite('original_image.jpg', x_start[0,0,:,:].detach().cpu().numpy()*255)
+        # cv2.imwrite('raw_noise.jpg', noise[0,0,:,:].detach().cpu().numpy()*255)
         x = self.q_sample(x_start = x_start, t = t, noise = noise)
+        # print('-------x shape: ', x.shape)
+        # np.save('intermediate.npy', x.detach().cpu().numpy())
+        # cv2.imwrite('output_image.jpg', x[0,0,:,:].detach().cpu().numpy()*255)
+        # print('---noised image range: ', torch.min(x), torch.max(x))
 
         # if doing self-conditioning, 50% of the time, predict x_start from current set of times
         # and condition with unet with that
@@ -838,8 +848,9 @@ class GaussianDiffusion(Module):
         b, c, h, w, device, img_size, = *img.shape, img.device, self.image_size
         assert h == img_size[0] and w == img_size[1], f'height and width of image must be {img_size}'
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
-
-        img = self.normalize(img)
+        # print('-----------------: ', img.shape)
+        # cv2.imwrite('before_norm_original_image.jpg', img[0,0,:,:].detach().cpu().numpy()*255)
+        # img = self.normalize(img)
         
         
         current_epoch = kwargs.pop('epoch', 0)

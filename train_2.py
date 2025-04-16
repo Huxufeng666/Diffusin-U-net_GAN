@@ -2,24 +2,26 @@ import argparse
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from data import MedicalDataset, BUSDataset,BUS_UCMDataset,BUSIDataset
+from data import MedicalDataset, BUSIDataset
 import torch.optim as optim
 import torch.nn as nn
-from Discrimintor import Discriminator,ComplexDiscriminator_pro
+from Discrimintor import Discriminator,ComplexDiscriminator_pro,PatchDiscriminator
 from model import EndToEndModel, ResNet, BasicBlock
 import os
 import csv
 import datetime
 from tqdm import tqdm
-from configs.loss import CombinedLoss, CombinedLoss_pro, BCEDiceLoss, DiceLoss_T, DiceLoss_v,dice_coefficient, plot_losses, plot_losses_2,plot_losses_pros
+from configs.loss import CombinedLoss,  BCEDiceLoss, DiceLoss_T, DiceLoss_v,dice_coefficient, plot_losses, plot_losses_2,plot_losses_pros
 import torch.nn.functional as F
 from denoising_diffusion import GaussianDiffusion
 from UNet import UNet, UNets,AttentionResUNet
-# from torchvision.utils import save_image
-# from torchvision.utils import make_grid, save_image
-import numpy as np
+from torchvision.utils import save_image
 from configs.save_diffusion_comparison import save_diffusion_comparison, save_diffusion_comparison_2,visualize_prediction
 from configs.gif import generate_grid_gif ,generate_individual_gifss
+import torchvision.transforms.functional as F
+import numpy as np
+import glob
+
 
 
 
@@ -32,58 +34,142 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
     parser.add_argument('--data_path', type=str, default='/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUSI')
     parser.add_argument('--weights_dir', type=str, default='weights')
-    parser.add_argument('--train_mode', type=str, default='diffusion_only', choices=['diffusion_only', 'finetune_unet', 'unet_only', 'full_pipeline'])
+    parser.add_argument('--train_mode', type=str, default='unet_only',
+                        choices=['diffusion_only', 'finetune_unet', 'unet_only', 'full_pipeline'])
     parser.add_argument('--unet_ckpt', type=str, default="", help='Path to U-Net pretrained weights')
     parser.add_argument('--diffusion_ckpt', type=str, default='', help='Path to diffusion model checkpoint')
     return parser.parse_args()
 
 
+
+def load_diffusion_model(args, device):
+    model = GaussianDiffusion(
+        model=ResNet(BasicBlock, [2, 2, 2, 2], num_classes=1),
+        image_size=256,
+        timesteps=1000,
+        objective='pred_noise',
+        beta_schedule='sigmoid',
+        auto_normalize=True,
+        offset_noise_strength=0.0,
+        min_snr_loss_weight=False,
+        min_snr_gamma=5,
+        immiscible=False
+    )
+    if args.diffusion_ckpt and os.path.exists(args.diffusion_ckpt):
+        model.load_state_dict(torch.load(args.diffusion_ckpt, map_location=device))
+        print("[INFO] Loaded diffusion model from:", args.diffusion_ckpt)
+    return model.to(device)
+
+
+# ========== Early Stopper 类 ==========
 class EarlyStopper:
-    def __init__(self, patience=10, min_delta=1e-4):
+    def __init__(self, patience=10, min_delta=1e-4, model=None, path=None):
+        """
+        :param patience: 容忍验证损失无提升的轮数
+        :param min_delta: 最小改进幅度
+        :param model: 当前训练的模型，用于保存最佳权重
+        :param path: 保存权重的目录（非完整文件路径！）
+        """
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
         self.best_loss = None
         self.early_stop = False
+        self.model = model
+        self.path_dir = path
+        self.previous_model_path = None  # 上一次保存的权重路径
 
-    def __call__(self, current_loss):
-        if self.best_loss is None:
-            self.best_loss = current_loss
-            return False
+        # 如果传入路径，确保文件夹存在
+        if self.path_dir and not os.path.exists(self.path_dir):
+            os.makedirs(self.path_dir, exist_ok=True)
 
-        if current_loss < self.best_loss - self.min_delta:
+    def __call__(self, current_loss, epoch):
+        """
+        :param current_loss: 当前验证损失
+        :param epoch: 当前训练轮次（用于记录最佳 epoch）
+        :return: 是否触发提前停止
+        """
+        # 当前 loss 更好时保存模型
+        if self.best_loss is None or current_loss < self.best_loss - self.min_delta:
             self.best_loss = current_loss
             self.counter = 0
+
+            # 删除旧的最优权重
+            if self.previous_model_path and os.path.exists(self.previous_model_path):
+                os.remove(self.previous_model_path)
+
+            # 构建保存路径
+            if self.model and self.path_dir:
+                filename = f"epoch_{epoch}_best_model.pth" if epoch is not None else "best_model.pth"
+                self.previous_model_path = os.path.join(self.path_dir, filename)
+                torch.save(self.model.state_dict(), self.previous_model_path)
+
+                # 写入最佳 epoch
+                with open(os.path.join(self.path_dir, f"{epoch}"+"Best_epoch.txt"), 'w') as f:
+                    f.write(str(epoch) if epoch is not None else "unknown")
+
+                print(f"[📌] Best model saved at epoch {epoch} with val loss {current_loss:.4f}")
         else:
             self.counter += 1
 
+        # 提前停止条件
         if self.counter >= self.patience:
             self.early_stop = True
 
         return self.early_stop
 
-# ========== Train Function ==========
 
-def train_diffusion(args, device):
-    import datetime, os, csv
-    from tqdm import tqdm
-    from glob import glob
-    from PIL import Image
-    import numpy as np
-    import imageio
+def find_latest_diffusion_ckpt(base_dir):
+    subdirs = [d for d in os.listdir(base_dir) if "FullPipeline" in d]
+    if not subdirs:
+        return None
+    subdirs.sort(reverse=True)
+    latest_dir = os.path.join(base_dir, subdirs[0], "diffusion/best_model")
+    print(latest_dir)
+    matched = glob.glob(os.path.join(latest_dir, 'epoch_*_best_model.pth'))
+    print(matched)
+    return matched[0] if matched else None
 
-    now = datetime.datetime.now()
-    formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
-    weights_dir = os.path.join(args.weights_dir, formatted_time + "_Diffusion")
-    os.makedirs(weights_dir, exist_ok=True)
+
+def get_save_paths(args, sub_module=None):
+    assert hasattr(args, 'timestamp'), "args.timestamp must be set in main()"
+
+    mode_to_tag = {
+        'diffusion_only': 'Diffusion',
+        'unet_only': 'UNet',
+        'finetune_unet': 'UNet_Finetune',
+        'full_pipeline': 'FullPipeline'
+    }
+    model_tag = mode_to_tag.get(args.train_mode, 'Unknown')
+
+    # ✅ 使用传入的统一时间戳
+    root_dir = os.path.join(args.weights_dir, f"{args.timestamp}_{model_tag}")
+    os.makedirs(root_dir, exist_ok=True)
+
+    if args.train_mode == 'full_pipeline' and sub_module in ['diffusion', 'unet']:
+        weights_dir = os.path.join(root_dir, sub_module)
+        os.makedirs(weights_dir, exist_ok=True)
+        csv_file = os.path.join(weights_dir, f"training_{sub_module}_log.csv")
+    else:
+        weights_dir = root_dir
+        csv_file = os.path.join(weights_dir, f"training_{model_tag}_log.csv")
+
+    return weights_dir, csv_file
+
+
+def train_diffusion(args, device,sub_module=None):
+    weights_dir, csv_file = get_save_paths(args, sub_module=sub_module)   #weights/2025-04-16_20-51-20_FullPipeline
+
+    
+    # os.makedirs(weights_dir, exist_ok=True)
     csv_file = os.path.join(weights_dir, "training_diffusio_log.csv")
 
+    # 数据增强
     image_transform = transforms.Compose([
         transforms.Resize((args.size, args.size)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5])
     ])
-
     mask_transform = transforms.Compose([
         transforms.Resize((256, 256)),
         transforms.ToTensor(),
@@ -96,10 +182,17 @@ def train_diffusion(args, device):
         image_transform=image_transform,
         mask_transform=mask_transform)
 
+    val_dataset = BUSIDataset(
+        image_dir=os.path.join(args.data_path, 'val', 'images'),
+        mask_dir=os.path.join(args.data_path, 'val', 'masks'),
+        image_transform=image_transform,
+        mask_transform=mask_transform)
+
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+
     sample_loader = DataLoader(train_dataset, batch_size=4, shuffle=False)
-    sample_iter = iter(sample_loader)
-    sample_images, sample_masks = next(sample_iter)
+    sample_images, sample_masks = next(iter(sample_loader))
     sample_images, sample_masks = sample_images.to(device), sample_masks.to(device)
 
     diffusion_model = GaussianDiffusion(
@@ -118,22 +211,23 @@ def train_diffusion(args, device):
     discriminator = ComplexDiscriminator_pro().to(device)
     criterion_gan = CombinedLoss(alpha=1.0, beta=1.0, gamma=0.2)
 
-    optimizer = torch.optim.AdamW(diffusion_model.parameters(), lr=args.lr)
-    optimizer_d = torch.optim.AdamW(discriminator.parameters(), lr=args.lr, betas=(0.5, 0.999))
+    optimizer = torch.optim.Adam(diffusion_model.parameters(), lr=args.lr)
+    optimizer_d = torch.optim.Adam(discriminator.parameters(), lr=args.lr, betas=(0.5, 0.999))
 
-    early_stopper = EarlyStopper(patience=10, min_delta=1e-4)
-    print("[INFO] Starting diffusion training...")
+    early_stopper = EarlyStopper(patience=20, min_delta=1e-4, model=diffusion_model, path=os.path.join(weights_dir, "best_model"))
+
+
 
     sample_dir = os.path.join(weights_dir, "sample")
     os.makedirs(sample_dir, exist_ok=True)
-    top_k = 5
-    top_checkpoints = []
+
 
     for epoch in range(args.epochs):
         diffusion_model.train()
         discriminator.train()
         epoch_loss_gen = 0.0
         epoch_loss_d = 0.0
+
 
         for step, (images, masks) in enumerate(tqdm(train_loader)):
             images, masks = images.to(device), masks.to(device)
@@ -150,7 +244,7 @@ def train_diffusion(args, device):
             loss_total = loss + gan_loss_gen
 
             optimizer.zero_grad()
-            loss.backward()
+            loss_total.backward()
             optimizer.step()
             epoch_loss_gen += loss_total.item()
 
@@ -167,67 +261,68 @@ def train_diffusion(args, device):
         avg_gen_loss = epoch_loss_gen / len(train_loader)
         avg_d_loss = epoch_loss_d / len(train_loader)
 
-        print(f"[Diffusion] Epoch {epoch+1}/{args.epochs}, Gen Loss: {avg_gen_loss:.4f}, Disc Loss: {avg_d_loss:.4f}")
+        # ========= 验证集评估 =========
+        diffusion_model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for images, masks in val_loader:
+                images, masks = images.to(device), masks.to(device)
+                result = diffusion_model(images, masks)
+                loss = result[0] if isinstance(result, tuple) else result
+                val_loss += loss.item()
+        avg_val_loss = val_loss / len(val_loader)
 
-        if epoch == 0 and not os.path.exists(csv_file):
-            with open(csv_file, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(['epoch', 'generator_loss', 'discriminator_loss'])
+        print(f"[Epoch {epoch+1}] Gen Loss: {avg_gen_loss:.4f}, Disc Loss: {avg_d_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
 
-        with open(csv_file, 'a', newline='') as f:
+        # ========= 保存 CSV =========
+        with open(csv_file, 'a' if epoch else 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch + 1, avg_gen_loss, avg_d_loss])
+            if epoch == 0:
+                writer.writerow(['epoch', 'generator_loss', 'discriminator_loss', 'val_loss'])
+            writer.writerow([epoch + 1, avg_gen_loss, avg_d_loss, avg_val_loss])
 
-        save_dir = os.path.join(weights_dir, 'diffusion')
-        os.makedirs(save_dir, exist_ok=True)
-        model_path = os.path.join(save_dir, f"diffusion_epoch_{epoch+1}.pth")
-        torch.save(diffusion_model.state_dict(), model_path)
 
-        top_checkpoints.append((avg_gen_loss, model_path))
-        top_checkpoints.sort(key=lambda x: x[0])
-        if len(top_checkpoints) > top_k:
-            worst_loss, worst_path = top_checkpoints.pop()
-            if os.path.exists(worst_path):
-                os.remove(worst_path)
+        # # ✅ 保存最佳模型
+        if early_stopper.best_loss is None or avg_val_loss < early_stopper.best_loss - early_stopper.min_delta:
+
+            with open(os.path.join(weights_dir, "best_epoch.txt"), 'w') as f:
+                f.write(str(epoch + 1))
 
         if (epoch + 1) % 1 == 0:
             with torch.no_grad():
-                gen_vis = diffusion_model(sample_images, sample_masks)[1]
-                gen_vis = gen_vis.detach().clamp(0, 1)
+                gen_vis = diffusion_model(sample_images, sample_masks)[1].clamp(0, 1)
                 for i in range(4):
                     save_path = os.path.join(sample_dir, f"pred_epoch{epoch+1}_sample{i+1}.png")
-                    visualize_prediction(
-                        sample_images[i].cpu(),
-                        sample_masks[i].cpu(),
-                        gen_vis[i].cpu(),
-                        save_path=save_path
-                    )
+                    visualize_prediction(sample_images[i].cpu(), sample_masks[i].cpu(), gen_vis[i].cpu(), save_path=save_path)
+
         gif_output_path = os.path.join(weights_dir, "prediction_progress")
         os.makedirs(gif_output_path, exist_ok=True)
         generate_individual_gifss(image_folder=sample_dir, output_folder=gif_output_path, duration=5)
 
         plot_losses_2(csv_file, os.path.join(weights_dir, 'loss_curve'))
 
-        # if early_stopper(avg_gen_loss):
-        #     print("[⛔] Early stopping triggered. Best loss:", early_stopper.best_loss)
-        #     break
+        # ========= 提前停止 =========
+        if early_stopper(avg_val_loss,epoch=epoch + 1):
+            print(f"[⛔] Early stopping triggered. Best val loss: {early_stopper.best_loss:.4f}")
+            break
 
 
-        
-def train_unet(args, device):
-    now = datetime.datetime.now()
-    formatted_time = now.strftime("%Y-%m-%d_%H-%M-%S")
-    weights_dir = os.path.join(args.weights_dir, formatted_time +"_U-net")
-    os.makedirs(weights_dir, exist_ok=True)
 
-    csv_file = os.path.join(weights_dir, "training_unet_log.csv")
+def train_unet(args, device, use_diffusion_input=False, diffusion_model=None,sub_module=None):
+ 
+    
+    weights_dir, csv_file = get_save_paths(args, sub_module=sub_module)  
+ 
+    # weights_dir = os.path.join(weights_unet, "_U-Net")
+    # os.makedirs(weights_dir, exist_ok=True)
+    csv_file = os.path.join(weights_dir, "training_U-Net_log.csv")
+
 
     transform = transforms.Compose([
         transforms.Resize((args.size, args.size)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.5])
     ])
-
     mask_transform = transforms.Compose([
         transforms.Resize((256, 256)),
         transforms.ToTensor(),
@@ -239,142 +334,152 @@ def train_unet(args, device):
         image_transform=transform,
         mask_transform=mask_transform
     )
-
-    test_dataset = BUSIDataset(
-        image_dir=os.path.join(args.data_path, 'test', 'images'),
-        mask_dir=os.path.join(args.data_path, 'test', 'masks'),
+    val_dataset = BUSIDataset(
+        image_dir=os.path.join(args.data_path, 'val', 'images'),
+        mask_dir=os.path.join(args.data_path, 'val', 'masks'),
         image_transform=transform,
         mask_transform=mask_transform
     )
+
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
-    model = UNets(n_channels=1,n_classes=1).to(device)
-    # model = AttentionResUNet().to(device)
-    if hasattr(args, 'unet_ckpt') and args.unet_ckpt and os.path.exists(args.unet_ckpt):
-        print("[INFO] Loading pretrained U-Net weights...")
-        model.load_state_dict(torch.load(args.unet_ckpt, map_location=device))
-
-    criterion_t = DiceLoss_T()
-    criterion_v = CombinedLoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    model = UNets(n_channels=1, n_classes=1).to(device)
 
     save_dir = os.path.join(weights_dir, 'unet_only')
-    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(save_dir, exist_ok=True)  # 这行必须在 EarlyStopper 之前
 
-    with open(csv_file, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['Epoch', 'Train Loss', 'Test Loss', 'Dice'])
+    early_stopper = EarlyStopper(
+        patience=20,
+        min_delta=1e-4,
+        model=model,
+        path=os.path.join(save_dir, "best_model.pth")
+    )
 
-    early_stopper = EarlyStopper(patience=10, min_delta=1e-4)
-    top_k = 5
-    top_checkpoints = []
+    if args.unet_ckpt and os.path.exists(args.unet_ckpt):
+        model.load_state_dict(torch.load(args.unet_ckpt, map_location=device))
+        print("[INFO] Loaded U-Net from:", args.unet_ckpt)
 
-    fixed_images_batch, fixed_masks_batch = next(iter(test_loader))
-    fixed_images = fixed_images_batch[:4].to(device)
-    fixed_masks = fixed_masks_batch[:4].to(device)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    criterion_t = DiceLoss_T()
+    criterion_v = CombinedLoss()
 
     sample_dir = os.path.join(weights_dir, "sample")
     os.makedirs(sample_dir, exist_ok=True)
+    gif_output_path = os.path.join(weights_dir, "prediction_progress.gif")
+
+    with open(csv_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Epoch', 'Train Loss', 'Val Loss', 'Dice'])
+
+    fixed_images_batch, fixed_masks_batch = next(iter(val_loader))
+    fixed_images = fixed_images_batch[:4].to(device)
+    fixed_masks = fixed_masks_batch[:4].to(device)
 
     for epoch in range(args.epochs):
         model.train()
-        train_loss = 0.0
-
+        total_loss = 0.0
         for step, (images, masks) in enumerate(tqdm(train_loader)):
-            images, masks = images.to(device), masks.to(device)
-            masks = masks.float()
+            masks = masks.to(device)
+            if use_diffusion_input:
+                with torch.no_grad():
+                    _, images = diffusion_model(images.to(device), masks)
+            else:
+                images = images.to(device)
             preds = model(images)
-            loss = criterion_t(preds, masks)
-
+            loss = criterion_t(preds, masks.float())
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            train_loss += loss.item()
+            total_loss += loss.item()
 
-            if epoch % 1 == 0 and step == 0:
-                model.eval()
-                with torch.no_grad():
-                    fixed_preds = model(fixed_images) 
-                    fixed_preds = torch.sigmoid(fixed_preds)  # 如果模型输出是 logits
-                             
-                    for i in range(4):
-                        # visualize_prediction(fixed_images[i], fixed_masks[i], fixed_preds[i], save_path=save_path)
-                        
-                        save_path = os.path.join(sample_dir, f"pred_epoch{epoch+1}_sample{i+1}.png")
-                        pred_i = fixed_preds[i].squeeze(0)  # [H, W]
-                        # pred_i = (pred_i > 0.5).float() # 二值化
-                        
-                        visualize_prediction(
-                                fixed_images[i].cpu(),
-                                fixed_masks[i].cpu(),
-                                pred_i,
-                                save_path=save_path
-                            )
-                                                            
-            
-        gif_output_path = os.path.join(weights_dir, "prediction_progress.gif")
-
-        generate_individual_gifss(image_folder=os.path.join(weights_dir, "sample"), output_folder=gif_output_path)
-
-        avg_train_loss = train_loss / len(train_loader)
-
+        # 可视化输出
         model.eval()
-        test_loss = 0.0
-        dice_scores = []
-
         with torch.no_grad():
-            for images, masks in test_loader:
-                images, masks = images.to(device), masks.to(device)
+            fixed_preds = torch.sigmoid(model(fixed_images))
+            for i in range(4):
+                save_path = os.path.join(sample_dir, f"pred_epoch{epoch+1}_sample{i+1}.png")
+                pred_i = fixed_preds[i].squeeze(0)
+                visualize_prediction(fixed_images[i].cpu(), fixed_masks[i].cpu(), pred_i, save_path=save_path)
+
+        generate_individual_gifss(image_folder=sample_dir, output_folder=gif_output_path)
+
+        avg_train_loss = total_loss / len(train_loader)
+
+        val_loss = 0.0
+        dice_scores = []
+        with torch.no_grad():
+            for images, masks in val_loader:
+                masks = masks.to(device)
+                if use_diffusion_input:
+                    _, images = diffusion_model(images.to(device), masks)
+                else:
+                    images = images.to(device)
                 preds = torch.sigmoid(model(images))
-                loss_test = criterion_v(preds, masks)
-                test_loss += loss_test.item()
-                preds_bin = (preds > 0.5).float()
-                dice = dice_coefficient(preds_bin.detach().cpu().numpy(), masks.detach().cpu().numpy())
+                loss = criterion_v(preds, masks)
+                val_loss += loss.item()
+                dice = dice_coefficient((preds > 0.5).float().cpu().numpy(), masks.cpu().numpy())
                 dice_scores.append(dice)
 
-        avg_test_loss = test_loss / len(test_loader)
+        avg_val_loss = val_loss / len(val_loader)
         avg_dice = np.mean(dice_scores)
 
-        print(f"Epoch [{epoch+1}/{args.epochs}] Train Loss: {avg_train_loss:.4f}, Test Loss: {avg_test_loss:.4f}, Dice: {avg_dice:.4f}")
-
-        model_path = os.path.join(save_dir, f"unet_epoch_{epoch+1}_dice_{avg_dice:.2f}.pth")
-        torch.save(model.state_dict(), model_path)
-
-        # top_checkpoints.append((avg_test_loss, model_path))
-        # top_checkpoints.sort(key=lambda x: x[0])
-        # if len(top_checkpoints) > top_k:
-        #     worst_loss, worst_path = top_checkpoints.pop()
-        #     if os.path.exists(worst_path):
-        #         os.remove(worst_path)
+        print(f"Epoch [{epoch+1}/{args.epochs}] Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Dice: {avg_dice:.4f}")
 
         with open(csv_file, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch + 1, avg_train_loss, avg_test_loss, avg_dice])
+            writer.writerow([epoch + 1, avg_train_loss, avg_val_loss, avg_dice])
 
         plot_losses(csv_file, os.path.join(weights_dir, 'loss_curve_total.png'))
         plot_losses_pros(csv_file, os.path.join(weights_dir, 'loss_curve.png'))
 
-        if early_stopper(avg_test_loss):
-            print("[⛔] Early stopping triggered. Best loss:", early_stopper.best_loss)
+        if early_stopper(avg_val_loss,epoch=epoch+1):
+            print("[⛔] Early stopping triggered. Best val loss:", early_stopper.best_loss)
             break
 
 
-            
+
+
 def main():
     args = parse_args()
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
+    args = parse_args()
+    args.timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")  
 
     if args.train_mode == 'diffusion_only':
-        train_diffusion(args, device)
+        train_diffusion(args, device, sub_module='diffusion')
+
     elif args.train_mode == 'unet_only':
-        train_unet(args, device)
+        train_unet(args, device, use_diffusion_input=False, diffusion_model=None, sub_module='unet')
+
     elif args.train_mode == 'finetune_unet':
-        train_unet(args, device)
+        diffusion_model = GaussianDiffusion(
+            model=ResNet(BasicBlock, [2, 2, 2, 2], num_classes=1),
+            image_size=256,
+            timesteps=1000,
+            objective='pred_noise',
+            beta_schedule='sigmoid'
+        ).to(device)
+        diffusion_model.load_state_dict(torch.load(args.diffusion_ckpt, map_location=device))
+        train_unet(args, device, use_diffusion_input=True, diffusion_model=diffusion_model, sub_module='unet')
+
     elif args.train_mode == 'full_pipeline':
-        train_diffusion(args, device)
-        train_unet(args, device)
+        train_diffusion(args, device, sub_module='diffusion')
+        best_ckpt = find_latest_diffusion_ckpt(args.weights_dir)
+        diffusion_model = GaussianDiffusion(
+            model=ResNet(BasicBlock, [2, 2, 2, 2], num_classes=1),
+            image_size=256,
+            timesteps=1000,
+            objective='pred_noise',
+            beta_schedule='sigmoid'
+        ).to(device)
+        if best_ckpt:
+            diffusion_model.load_state_dict(torch.load(best_ckpt, map_location=device))
+            print(f"[INFO] Loaded best diffusion model from: {best_ckpt}")
+        else:
+            print("[WARN] No best diffusion model found, using random initialization.")
+        train_unet(args, device, use_diffusion_input=True, diffusion_model=diffusion_model, sub_module='unet')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

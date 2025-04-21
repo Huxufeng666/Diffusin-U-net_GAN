@@ -38,6 +38,30 @@ class Discriminator(nn.Module):
         return self.model(x)
 
 
+class PatchDiscriminator(nn.Module):
+    def __init__(self, in_channels=1, norm_type='instance'):
+        super().__init__()
+
+        def discriminator_block(in_filters, out_filters, norm=True):
+            layers = [spectral_norm(nn.Conv2d(in_filters, out_filters, 4, stride=2, padding=1))]
+            if norm:
+                if norm_type == 'instance':
+                    layers.append(nn.InstanceNorm2d(out_filters))
+                elif norm_type == 'batch':
+                    layers.append(nn.BatchNorm2d(out_filters))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            return layers
+
+        self.model = nn.Sequential(
+            *discriminator_block(in_channels, 64, norm=False),  # 128x128
+            *discriminator_block(64, 128),
+            *discriminator_block(128, 256),
+            *discriminator_block(256, 512),
+            spectral_norm(nn.Conv2d(512, 1, kernel_size=4, stride=1, padding=1)),  # (B, 1, 15, 15)
+        )
+
+    def forward(self, x):
+        return self.model(x)  # 可用于 PatchGAN / GAN loss / BCE or WGAN
 
 # class ComplexDiscriminator_pro(nn.Module):
 #     def __init__(self, in_channels=1):

@@ -298,8 +298,8 @@ def plot_losses(csv_file, save_path):
     plt.figure(figsize=(10, 6))
     plt.plot(df['Epoch'], df['Train Loss'], label='Train Loss')
     
-    if 'Test Loss' in df.columns:
-        plt.plot(df['Epoch'], df['Test Loss'], label='Test Loss')
+    if 'Val Loss' in df.columns:
+        plt.plot(df['Epoch'], df['Val Loss'], label='Test Loss')
     # if 'Dice' in df.columns:
     #     plt.plot(df['Epoch'], df['Dice'], label='Dice Coefficient', linestyle='--') 
 
@@ -337,7 +337,7 @@ def  plot_losses_pros(csv_path, save_path):
 
     # 绘制测试损失（若存在）
     if 'Test Loss' in df.columns:
-        axes[1].plot(df['Epoch'], df['Test Loss'], color='green', label='Test Loss')
+        axes[1].plot(df['Epoch'], df['Val Loss'], color='green', label='Test Loss')
         axes[1].set_title('Test Loss')
         axes[1].set_xlabel('Epoch')
         axes[1].set_ylabel('Loss')

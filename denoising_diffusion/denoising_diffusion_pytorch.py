@@ -790,7 +790,7 @@ class GaussianDiffusion(Module):
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
 
-    def p_losses(self, x_start, t, noise = None, offset_noise_strength = None):
+    def p_losses(self, x_start, t, noise = None, offset_noise_strength = None,**kwargs):
         b, c, h, w = x_start.shape
         # print('------ should be none: ', torch.min(noise), torch.max(noise))
         noise = None
@@ -804,19 +804,20 @@ class GaussianDiffusion(Module):
             offset_noise = torch.randn(x_start.shape[:2], device = self.device)
             noise += offset_noise_strength * rearrange(offset_noise, 'b c -> b c 1 1')
 
-        # noise sample
-        # print('---image range: ', torch.min(x_start), torch.max(x_start))
-        # cv2.imwrite('original_image.jpg', x_start[0,0,:,:].detach().cpu().numpy()*255)
-        # cv2.imwrite('raw_noise.jpg', noise[0,0,:,:].detach().cpu().numpy()*255)
-        x = self.q_sample(x_start = x_start, t = t, noise = noise)
-        # print('-------x shape: ', x.shape)
-        # np.save('intermediate.npy', x.detach().cpu().numpy())
-        # cv2.imwrite('output_image.jpg', x[0,0,:,:].detach().cpu().numpy()*255)
-        # print('---noised image range: ', torch.min(x), torch.max(x))
+   
+   
+        # ========== 关键修改：将原图和噪声按掩码组合 ==========
 
-        # if doing self-conditioning, 50% of the time, predict x_start from current set of times
-        # and condition with unet with that
-        # this technique will slow down training by 25%, but seems to lower FID significantly
+        mask = kwargs.get("mask", None)  # 在调用时需要传入 mask 参数
+        
+        if mask is not None:
+            # 如果 mask 是 0/1，确保与输入一致大小（B, 1, H, W）
+            assert mask.shape == x_start.shape, "mask shape must match input shape"
+            
+            # 应用掩码控制输入区域
+            x_start = x_start * mask + noise * (1 - mask)
+        
+        x = self.q_sample(x_start = x_start, t = t, noise = noise)
 
         x_self_cond = None
         if self.self_condition and random() < 0.5:
@@ -852,19 +853,19 @@ class GaussianDiffusion(Module):
         # cv2.imwrite('before_norm_original_image.jpg', img[0,0,:,:].detach().cpu().numpy()*255)
         # img = self.normalize(img)
         
+        mask = kwargs.get('mask', None)  # ✅ 获取 mask
+      
+        loss = self.p_losses(img, t,*args, **kwargs)
         
-        current_epoch = kwargs.pop('epoch', 0)
-        
-        loss = self.p_losses(img, t, *args, **kwargs)
-        
-        if  current_epoch > 50 or current_epoch % 9 == 0:  # 第10、20、30、40、50次（从0开始）
-            img = self.unnormalize(img)
-            if img.dim() == 3:
-                img = img.unsqueeze(0)
-            return loss, img
-        else :
-            return loss,None
-            
+        # current_epoch = kwargs.pop('epoch', 0)
+        # if  current_epoch > 50 or current_epoch % 9 == 0:  # 第10、20、30、40、50次（从0开始）
+        #     img = self.unnormalize(img)
+        #     if img.dim() == 3:
+        #         img = img.unsqueeze(0)
+        #     return loss, img
+        # else :
+        #     return loss,None
+        return loss, img 
         
 
 # dataset classes

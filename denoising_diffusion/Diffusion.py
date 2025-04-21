@@ -188,6 +188,10 @@ class learned_noise_schedule(nn.Module):
         normed = self.slope * ((x - out_zero) / (out_one - out_zero)) + self.intercept
         return normed * frac_gradient + normed.detach() * (1 - frac_gradient)
 
+
+
+
+
 class ContinuousTimeGaussianDiffusion(nn.Module):
     def __init__(
         self,
@@ -357,23 +361,3 @@ class ContinuousTimeGaussianDiffusion(nn.Module):
         # return self.p_losses(img, times, *args, **kwargs)
         return output
     
-    
-    # def forward(self, img, mask):
-    #     """
-    #     Args:
-    #         img (torch.Tensor): 输入图像，形状为 (B, C, H, W)，例如值在 [0, 1]。
-    #         mask (torch.Tensor): 分割或条件 mask，形状应与 img 匹配 (B, C, H, W)，且取值范围在 [0, 1]，
-    #                             其中 1 表示前景（需要保留的区域，如肿瘤区域）。
-                                
-    #     Returns:
-    #         torch.Tensor: 输出图像 = img * mask + blurred(img) * (1 - mask)
-    #     """
-    #     b, c, h, w = img.shape
-    #     # 检查输入尺寸是否与设定的 image_size 一致
-    #     assert h == self.image_size and w == self.image_size, f'height and width must be {self.image_size}'
-        
-    #     # 如果需要，可以对图像做归一化，这里假设输入已经在合适的范围内
-    #     # 使用固定高斯模糊对图像进行背景模糊
-    #     output = self.blur(img, mask)
-        
-    #     return output

@@ -108,28 +108,35 @@ def visualize_prediction(image_tensor, mask_tensor, pred_tensor, save_path=None)
     mask_np = mask_tensor.squeeze().detach().cpu().numpy()
     pred_np = pred_tensor.squeeze().detach().cpu().numpy()
 
-    plt.figure(figsize=(14, 4))
+    plt.figure(figsize=(15, 4))
 
     # 原始图像
-    plt.subplot(1, 4, 1)
+    plt.subplot(1, 5, 1)
     plt.title("Input Image")
     plt.imshow(image_np, cmap='gray')
     plt.axis("off")
-
+    
+    # 原始图像直方图
+    plt.subplot(1, 5, 2)
+    plt.title("Input Histogram")
+    plt.hist(image_np.flatten(), bins=50, color='gray', alpha=0.7)
+    plt.xlabel("Pixel Value")
+    plt.ylabel("Count")
+    
     # 真实 mask
-    plt.subplot(1, 4, 2)
+    plt.subplot(1, 5, 3)
     plt.title("Ground Truth")
     plt.imshow(mask_np, cmap='gray')
     plt.axis("off")
 
     # 预测概率图
-    plt.subplot(1, 4, 3)
+    plt.subplot(1, 5, 4)
     plt.title("Predicted Prob")
     plt.imshow(pred_np, cmap='gray')
     plt.axis("off")
 
     # 预测值直方图
-    plt.subplot(1, 4, 4)
+    plt.subplot(1, 5, 5)
     plt.title("Pred Value Histogram")
     plt.hist(pred_np.flatten(), bins=50, color='blue', alpha=0.7)
     plt.xlabel("Pred Value")

@@ -6,14 +6,14 @@ from data import MedicalDataset, BUSIDataset
 import torch.optim as optim
 import torch.nn as nn
 from Discrimintor import Discriminator,ComplexDiscriminator_pro,PatchDiscriminator
-from model import EndToEndModel, ResNet, BasicBlock
+from model import EndToEndModel, ResNet, BasicBlock,SimpleUNet
 import os
 import csv
 import datetime
 from tqdm import tqdm
 from configs.loss import CombinedLoss,  BCEDiceLoss, DiceLoss_T, DiceLoss_v,dice_coefficient, plot_losses, plot_losses_2,plot_losses_pros
 import torch.nn.functional as F
-from denoising_diffusion import GaussianDiffusion, ContinuousTimeGaussianDiffusion
+from denoising_diffusion import GaussianDiffusion, GaussianDiffusion_att
 from U_net import UNetb, UNets,AttentionResUNet
 from torchvision.utils import save_image
 from configs.save_diffusion_comparison import save_diffusion_comparison, save_diffusion_comparison_2,visualize_prediction
@@ -83,7 +83,7 @@ def train_diffusion(args, device,sub_module=None):
     sample_images, sample_masks = next(iter(sample_loader))
     sample_images, sample_masks = sample_images.to(device), sample_masks.to(device)
 
-    diffusion_model = ContinuousTimeGaussianDiffusion(
+    diffusion_model = GaussianDiffusion(
         model=ResNet(BasicBlock, [2, 2, 2, 2], num_classes=1),
         image_size=256,
         timesteps=1000,
@@ -96,13 +96,14 @@ def train_diffusion(args, device,sub_module=None):
         immiscible=False
     ).to(device)
 
+    
     discriminator = ComplexDiscriminator_pro().to(device)
     criterion_gan = CombinedLoss(alpha=1.0, beta=1.0, gamma=0.2)
 
     optimizer = torch.optim.Adam(diffusion_model.parameters(), lr=args.lr)
     optimizer_d = torch.optim.Adam(discriminator.parameters(), lr=args.lr, betas=(0.5, 0.999))
 
-    early_stopper = EarlyStopper(patience=20, min_delta=1e-4, model=diffusion_model, path=os.path.join(weights_dir, "best_model"))
+    early_stopper = EarlyStopper(patience=10, min_delta=1e-4, model=diffusion_model, path=os.path.join(weights_dir, "best_model"))
 
 
 
@@ -126,7 +127,6 @@ def train_diffusion(args, device,sub_module=None):
             else:
                 loss = result
                 gen_image = images
-                
             
 
             d_out_fake = discriminator(images)
@@ -139,7 +139,7 @@ def train_diffusion(args, device,sub_module=None):
             epoch_loss_gen += loss_total.item()
 
             optimizer_d.zero_grad()
-            d_out_real = discriminator(masks)
+            d_out_real = discriminator(gen_image)
             d_loss_real = criterion_gan(d_out_real, torch.ones_like(d_out_real))
             d_out_fake = discriminator(gen_image.detach())
             d_loss_fake = criterion_gan(d_out_fake, torch.zeros_like(d_out_fake))
@@ -157,7 +157,7 @@ def train_diffusion(args, device,sub_module=None):
         with torch.no_grad():
             for images, masks in val_loader:
                 images, masks = images.to(device), masks.to(device)
-                result = diffusion_model(images, masks)
+                result = diffusion_model(images)
                 loss = result[0] if isinstance(result, tuple) else result
                 val_loss += loss.item()
         avg_val_loss = val_loss / len(val_loader)
@@ -180,7 +180,7 @@ def train_diffusion(args, device,sub_module=None):
 
         if (epoch + 1) % 1 == 0:
             with torch.no_grad():
-                gen_vis = diffusion_model(sample_images, sample_masks)[1].clamp(0, 1)
+                gen_vis = diffusion_model(sample_images)[1].clamp(0, 1)
                 for i in range(4):
                     save_path = os.path.join(sample_dir, f"pred_epoch{epoch+1}_sample{i+1}.png")
                     visualize_prediction(sample_images[i].cpu(), sample_masks[i].cpu(), gen_vis[i].cpu(), save_path=save_path)
@@ -240,7 +240,7 @@ def train_unet(args, device, use_diffusion_input=False, diffusion_model=None,sub
     os.makedirs(save_dir, exist_ok=True)  # 这行必须在 EarlyStopper 之前
 
     early_stopper = EarlyStopper(
-        patience=20,
+        patience=10,
         min_delta=1e-4,
         model=model,
         path=os.path.join(save_dir, "best_model.pth")
@@ -273,7 +273,7 @@ def train_unet(args, device, use_diffusion_input=False, diffusion_model=None,sub
             masks = masks.to(device)
             if use_diffusion_input:
                 with torch.no_grad():
-                    _, images = diffusion_model(images.to(device), masks)
+                    _, images = diffusion_model(images.to(device))
             else:
                 images = images.to(device)
             preds = model(images)
@@ -323,11 +323,13 @@ def train_unet(args, device, use_diffusion_input=False, diffusion_model=None,sub
         plot_losses(csv_file, os.path.join(weights_dir, 'loss_curve_total.png'))
         plot_losses_pros(csv_file, os.path.join(weights_dir, 'loss_curve.png'))
 
-        if early_stopper(avg_val_loss,epoch=epoch+1):
+        # if early_stopper(avg_val_loss,epoch=epoch+1):
+        #     print("[⛔] Early stopping triggered. Best val loss:", early_stopper.best_loss)
+        #     break
+
+        if not (torch.isnan(torch.tensor(avg_val_loss)) or torch.isinf(torch.tensor(avg_val_loss))) and early_stopper(avg_val_loss, epoch=epoch+1):
             print("[⛔] Early stopping triggered. Best val loss:", early_stopper.best_loss)
             break
-
-
 
 
 def main():

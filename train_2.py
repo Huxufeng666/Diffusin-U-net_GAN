@@ -14,7 +14,7 @@ from tqdm import tqdm
 from configs.loss import CombinedLoss,  BCEDiceLoss, DiceLoss_T, DiceLoss_v,dice_coefficient, plot_losses, plot_losses_2,plot_losses_pros
 import torch.nn.functional as F
 from denoising_diffusion import GaussianDiffusion
-from UNet import UNet, UNets,AttentionResUNet
+from U_net import UNetb, UNets,AttentionResUNet
 from torchvision.utils import save_image
 from configs.save_diffusion_comparison import save_diffusion_comparison, save_diffusion_comparison_2,visualize_prediction
 from configs.gif import generate_grid_gif ,generate_individual_gifss

@@ -13,7 +13,7 @@ import datetime
 from tqdm import tqdm
 from configs.loss import CombinedLoss,  BCEDiceLoss, DiceLoss_T, DiceLoss_v,dice_coefficient, plot_losses, plot_losses_2,plot_losses_pros
 import torch.nn.functional as F
-from denoising_diffusion import GaussianDiffusion
+from denoising_diffusion import GaussianDiffusion, ContinuousTimeGaussianDiffusion
 from U_net import UNetb, UNets,AttentionResUNet
 from torchvision.utils import save_image
 from configs.save_diffusion_comparison import save_diffusion_comparison, save_diffusion_comparison_2,visualize_prediction
@@ -36,10 +36,10 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
     parser.add_argument('--data_path', type=str, default='/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUSI')
     parser.add_argument('--weights_dir', type=str, default='weights')
-    parser.add_argument('--train_mode', type=str, default='finetune_unet',
+    parser.add_argument('--train_mode', type=str, default='full_pipeline',
                         choices=['diffusion_only', 'finetune_unet', 'unet_only', 'full_pipeline'])
-    parser.add_argument('--unet_ckpt', type=str, default="weights/2025-04-17_14-11-15_UNet/unet_only/best_model.pth/epoch_28_best_model.pth", help='Path to U-Net pretrained weights')
-    parser.add_argument('--diffusion_ckpt', type=str, default='weights/2025-04-17_10-57-52_Diffusion/best_model/epoch_70_best_model.pth', help='Path to diffusion model checkpoint')
+    parser.add_argument('--unet_ckpt', type=str, default="", help='Path to U-Net pretrained weights')
+    parser.add_argument('--diffusion_ckpt', type=str, default='', help='Path to diffusion model checkpoint')
     return parser.parse_args()
 
 
@@ -83,7 +83,7 @@ def train_diffusion(args, device,sub_module=None):
     sample_images, sample_masks = next(iter(sample_loader))
     sample_images, sample_masks = sample_images.to(device), sample_masks.to(device)
 
-    diffusion_model = GaussianDiffusion(
+    diffusion_model = ContinuousTimeGaussianDiffusion(
         model=ResNet(BasicBlock, [2, 2, 2, 2], num_classes=1),
         image_size=256,
         timesteps=1000,

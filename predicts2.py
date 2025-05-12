@@ -9,14 +9,14 @@ import torch
 import torch.nn.functional as F
 from torchvision import transforms
 from model import UNets  
-from UNet import  AttentionResUNet# 确保你已经导入了 UNet 模型类
+from U_net import  AttentionResUNet# 确保你已经导入了 UNet 模型类
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Test trained U-Net model")
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
-    parser.add_argument('--unet_ckpt', type=str, default='weights/2025-04-17_14-58-28_UNet_Finetune/unet_only/best_model.pth/epoch_24_best_model.pth', help='Path to trained U-Net weights')
-    parser.add_argument('--image_path', type=str, default="sample/malignant.png",help='Path to test image or directory of images')
+    parser.add_argument('--unet_ckpt', type=str, default='weights/2025-05-12_01-59-05_UNet/unet_only/best_model.pth/epoch_36_best_model.pth', help='Path to trained U-Net weights')
+    parser.add_argument('--image_path', type=str, default="/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUS-UCLM/test/images/UNCU_003.png",help='Path to test image or directory of images')
     parser.add_argument('--output_dir', type=str, default='./outputs', help='Directory to save predictions')
     parser.add_argument('--size', type=int, default=256)
     return parser.parse_args()

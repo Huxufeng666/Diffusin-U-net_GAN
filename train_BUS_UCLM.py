@@ -2,7 +2,7 @@ import argparse
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from data import MedicalDataset, BUSIDataset
+from data import MedicalDataset, BUS_UCLM_Dataset
 import torch.optim as optim
 import torch.nn as nn
 from Discrimintor import Discriminator,ComplexDiscriminator_pro,PatchDiscriminator
@@ -34,12 +34,12 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=0.0001)
     parser.add_argument('--size', type=int, default=256)
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
-    parser.add_argument('--data_path', type=str, default='/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUSI')
+    parser.add_argument('--data_path', type=str, default='/home/ami-1/HUXUFENG/UIstasound/Dataset_BUSI_with_GT/BUS-UCLM')
     parser.add_argument('--weights_dir', type=str, default='weights')
     parser.add_argument('--train_mode', type=str, default='unet_only',
                         choices=['diffusion_only', 'finetune_unet', 'unet_only', 'full_pipeline'])
     parser.add_argument('--unet_ckpt', type=str, default="", help='Path to U-Net pretrained weights')
-    parser.add_argument('--diffusion_ckpt', type=str, default='weights/2025-05-10_21-39-40_FullPipeline/diffusion/best_model/epoch_15_best_model.pth', help='Path to diffusion model checkpoint')
+    parser.add_argument('--diffusion_ckpt', type=str, default='', help='Path to diffusion model checkpoint')
     return parser.parse_args()
 
 """
@@ -66,13 +66,13 @@ def train_diffusion(args, device,sub_module=None):
         transforms.Lambda(lambda x: (x > 0.5).float())
     ])
 
-    train_dataset = BUSIDataset(
+    train_dataset = BUS_UCLM_Dataset(
         image_dir=os.path.join(args.data_path, 'train', 'images'),
         mask_dir=os.path.join(args.data_path, 'train', 'masks'),
         image_transform=image_transform,
         mask_transform=mask_transform)
 
-    val_dataset = BUSIDataset(
+    val_dataset = BUS_UCLM_Dataset(
         image_dir=os.path.join(args.data_path, 'val', 'images'),
         mask_dir=os.path.join(args.data_path, 'val', 'masks'),
         image_transform=image_transform,
@@ -227,16 +227,16 @@ def train_unet(args, device, use_diffusion_input=False, diffusion_model=None,sub
         transforms.ToTensor(),
     ])
 
-    train_dataset = BUSIDataset(
+    train_dataset = BUS_UCLM_Dataset(
         image_dir=os.path.join(args.data_path, 'train', 'images'),
         mask_dir=os.path.join(args.data_path, 'train', 'masks'),
-        image_transform=transform,
+        transform=transform,
         mask_transform=mask_transform
     )
-    val_dataset = BUSIDataset(
+    val_dataset = BUS_UCLM_Dataset(
         image_dir=os.path.join(args.data_path, 'val', 'images'),
         mask_dir=os.path.join(args.data_path, 'val', 'masks'),
-        image_transform=transform,
+        transform=transform,
         mask_transform=mask_transform
     )
 

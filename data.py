@@ -108,6 +108,8 @@ class BUSIDataset(Dataset):
         return image, mask
 
 
+
+
 class BUSBRADataset(Dataset):
     def __init__(self, image_dir, mask_dir, image_transform=None, mask_transform=None):
         self.image_dir = image_dir
@@ -175,7 +177,7 @@ class BUS_UCMDataset(Dataset):
     
 
 
-class BUSDataset(Dataset):
+class BUS_UCLM_Dataset(Dataset):
     def __init__(self, image_dir, mask_dir, transform=None, mask_transform=None):
         self.image_dir = image_dir
         self.mask_dir = mask_dir

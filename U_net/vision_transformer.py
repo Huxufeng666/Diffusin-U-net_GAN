@@ -27,23 +27,40 @@ class SwinUnet(nn.Module):
         self.zero_head = zero_head
         self.config = config
 
-        self.swin_unet = SwinTransformerSys(img_size=config.DATA.IMG_SIZE,
-                                patch_size=config.MODEL.SWIN.PATCH_SIZE,
-                                in_chans=config.MODEL.SWIN.IN_CHANS,
-                                num_classes=self.num_classes,
-                                embed_dim=config.MODEL.SWIN.EMBED_DIM,
-                                depths=config.MODEL.SWIN.DEPTHS,
-                                num_heads=config.MODEL.SWIN.NUM_HEADS,
-                                window_size=config.MODEL.SWIN.WINDOW_SIZE,
-                                mlp_ratio=config.MODEL.SWIN.MLP_RATIO,
-                                qkv_bias=config.MODEL.SWIN.QKV_BIAS,
-                                qk_scale=config.MODEL.SWIN.QK_SCALE,
-                                drop_rate=config.MODEL.DROP_RATE,
-                                drop_path_rate=config.MODEL.DROP_PATH_RATE,
-                                ape=config.MODEL.SWIN.APE,
-                                patch_norm=config.MODEL.SWIN.PATCH_NORM,
-                                use_checkpoint=config.TRAIN.USE_CHECKPOINT)
-
+        # self.swin_unet = SwinTransformerSys(img_size=config.DATA.IMG_SIZE,
+        #                         patch_size=config.MODEL.SWIN.PATCH_SIZE,
+        #                         in_chans=config.MODEL.SWIN.IN_CHANS,
+        #                         num_classes=self.num_classes,
+        #                         embed_dim=config.MODEL.SWIN.EMBED_DIM,
+        #                         depths=config.MODEL.SWIN.DEPTHS,
+        #                         num_heads=config.MODEL.SWIN.NUM_HEADS,
+        #                         window_size=config.MODEL.SWIN.WINDOW_SIZE,
+        #                         mlp_ratio=config.MODEL.SWIN.MLP_RATIO,
+        #                         qkv_bias=config.MODEL.SWIN.QKV_BIAS,
+        #                         qk_scale=config.MODEL.SWIN.QK_SCALE,
+        #                         drop_rate=config.MODEL.DROP_RATE,
+        #                         drop_path_rate=config.MODEL.DROP_PATH_RATE,
+        #                         ape=config.MODEL.SWIN.APE,
+        #                         patch_norm=config.MODEL.SWIN.PATCH_NORM,
+        #                         use_checkpoint=config.TRAIN.USE_CHECKPOINT)
+        self.swin_unet = SwinTransformerSys(
+            img_size=config['DATA']['IMG_SIZE'],
+            patch_size=config['MODEL']['SWIN'].get('PATCH_SIZE', 4),  # 使用默认值
+            in_chans=config['MODEL']['SWIN'].get('IN_CHANS', 3),
+            num_classes=self.num_classes,
+            embed_dim=config['MODEL']['SWIN'].get('EMBED_DIM', 96),
+            depths=config['MODEL']['SWIN'].get('DEPTHS', [2, 2, 6, 2]),
+            num_heads=config['MODEL']['SWIN'].get('NUM_HEADS', [3, 6, 12, 24]),
+            window_size=config['MODEL']['SWIN'].get('WINDOW_SIZE', 7),
+            mlp_ratio=config['MODEL']['SWIN'].get('MLP_RATIO', 4),
+            qkv_bias=config['MODEL']['SWIN'].get('QKV_BIAS', True),
+            qk_scale=config['MODEL']['SWIN'].get('QK_SCALE', None),
+            drop_rate=config['MODEL']['SWIN'].get('DROP_RATE', 0.0),
+            drop_path_rate=config['MODEL']['SWIN'].get('DROP_PATH_RATE', 0.1),  # 使用默认值
+            ape=config['MODEL']['SWIN'].get('APE', False),
+            patch_norm=config['MODEL']['SWIN'].get('PATCH_NORM', True),
+            use_checkpoint=config['TRAIN']['USE_CHECKPOINT']
+        )
     def forward(self, x):
         if x.size()[1] == 1:
             x = x.repeat(1,3,1,1)

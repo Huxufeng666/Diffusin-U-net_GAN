@@ -8,6 +8,7 @@ from random import random
 from functools import partial
 from collections import namedtuple
 from multiprocessing import cpu_count
+import kornia
 
 import torch
 from torch import nn, einsum
@@ -23,7 +24,7 @@ from torchvision import transforms as T, utils
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange
 
-from scipy.optimize import linear_sum_assignment
+# from scipy.optimize import linear_sum_assignment
 
 from PIL import Image
 from tqdm.auto import tqdm
@@ -35,6 +36,9 @@ from einops import rearrange
 from .attend import Attend
 
 # from denoising_diffusion_pytorch.version import __version__
+
+from configs.loss import SSIMLoss
+
 
 # constants
 
@@ -804,23 +808,11 @@ class GaussianDiffusion(Module):
             offset_noise = torch.randn(x_start.shape[:2], device = self.device)
             noise += offset_noise_strength * rearrange(offset_noise, 'b c -> b c 1 1')
 
-   
-   
-        # ========== 关键修改：将原图和噪声按掩码组合 ==========
-
-        mask = kwargs.get("mask", None)  # 在调用时需要传入 mask 参数
-        
-        if mask is not None:
-            # 如果 mask 是 0/1，确保与输入一致大小（B, 1, H, W）
-            assert mask.shape == x_start.shape, "mask shape must match input shape"
-            
-            # 应用掩码控制输入区域
-            x_start = x_start * mask + noise * (1 - mask)
         
         x = self.q_sample(x_start = x_start, t = t, noise = noise)
 
         x_self_cond = None
-        if self.self_condition and random() < 0.5:
+        if self.self_condition and random.random()< 0.5:
             with torch.no_grad():
                 x_self_cond = self.model_predictions(x, t).pred_x_start
                 x_self_cond.detach_()
@@ -845,28 +837,47 @@ class GaussianDiffusion(Module):
         loss = loss * extract(self.loss_weight, t, loss.shape)
         return loss.mean()
 
+
     def forward(self, img, *args, **kwargs):
-        b, c, h, w, device, img_size, = *img.shape, img.device, self.image_size
+        b, c, h, w, device, img_size = *img.shape, img.device, self.image_size
         assert h == img_size[0] and w == img_size[1], f'height and width of image must be {img_size}'
+
+        # 随机选择时间步
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
-        # print('-----------------: ', img.shape)
-        # cv2.imwrite('before_norm_original_image.jpg', img[0,0,:,:].detach().cpu().numpy()*255)
-        # img = self.normalize(img)
-        
-        mask = kwargs.get('mask', None)  # ✅ 获取 mask
-      
-        loss = self.p_losses(img, t,*args, **kwargs)
-        
-        # current_epoch = kwargs.pop('epoch', 0)
-        # if  current_epoch > 50 or current_epoch % 9 == 0:  # 第10、20、30、40、50次（从0开始）
-        #     img = self.unnormalize(img)
-        #     if img.dim() == 3:
-        #         img = img.unsqueeze(0)
-        #     return loss, img
-        # else :
-        #     return loss,None
-        return loss, img 
-        
+
+        # 计算基本损失
+        loss = self.p_losses(img, t, *args, **kwargs)
+
+        # 生成基本噪声
+        noise = torch.randn_like(img).to(device)
+
+        # 生成频域噪声
+        freq_noise = torch.fft.fft2(noise)
+        phase_shift = torch.exp(1j * torch.randn_like(freq_noise).angle())
+        freq_noise = torch.fft.ifft2(freq_noise * torch.exp(1j * torch.randn_like(phase_shift).angle())).real
+
+        # # 自适应噪声调节 (增强肿瘤区域)
+        # mask = kwargs.get("mask", None)
+        # if mask is not None:
+        #     assert mask.shape == img.shape, "Mask shape must match input shape"
+            
+        #     tumor_noise = 0.2 * noise + 0.8 * freq_noise
+        #     soft_tissue_noise = 0.5 * noise + 0.5 * freq_noise
+            
+        #     # 使用 mask 控制肿瘤区域和软组织区域
+        #     enhanced_noise = tumor_noise * mask + soft_tissue_noise * (1 - mask)
+        # else:
+        enhanced_noise = 0.05 * noise + 0.05 * freq_noise
+
+        # 控制噪声强度
+        noise_intensity =0.001# torch.randn(1).item() * 0.01
+        enhanced_noise = enhanced_noise * noise_intensity
+
+        # 返回损失和扰动后的图像
+        return loss, img + enhanced_noise
+
+
+
 
 # dataset classes
 
@@ -1132,3 +1143,336 @@ class Trainer:
                 pbar.update(1)
 
         accelerator.print('training complete')
+        
+        
+        
+        
+# ----------------------------------------------------------------------------------------------------------------------------------------
+
+
+   
+# ---------------------------------------------------------------------------------------------------
+import torch
+import torch.nn.functional as F
+from torch import nn
+from einops import rearrange, reduce
+from functools import partial
+import random
+
+
+
+class SelfAttention(nn.Module):
+    def __init__(self, dim, heads=4, dim_head=16, downsample_factor=4):
+        super().__init__()
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+        inner_dim = dim_head * heads
+        self.downsample_factor = downsample_factor
+
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
+        self.to_out = nn.Linear(inner_dim, dim)
+
+    def forward(self, x):
+        # x: (B, C, H, W) -> (B, H*W, C)
+        b, c, h, w = x.shape
+        
+        # 降采样减少计算量
+        h = h // self.downsample_factor
+        w = w // self.downsample_factor
+        x = F.avg_pool2d(x, kernel_size=self.downsample_factor)
+        
+        x = x.view(b, c, h * w).permute(0, 2, 1)  # (B, H*W, C)
+        
+        # 计算 Q, K, V
+        qkv = self.to_qkv(x).chunk(3, dim=-1)  # (B, H*W, Inner_Dim)
+
+        # Split into heads
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.heads), qkv)
+
+        # Scaled dot-product attention
+        dots = torch.einsum('bhid,bhjd->bhij', q, k) * self.scale
+        attn = dots.softmax(dim=-1)
+
+        # Weighted sum
+        out = torch.einsum('bhij,bhjd->bhid', attn, v)
+        out = rearrange(out, 'b h n d -> b n (h d)')
+
+        # Project back to original dim
+        out = self.to_out(out)
+        out = out.permute(0, 2, 1).view(b, c, h, w)  # (B, C, H, W)
+        return out
+
+
+
+class GaussianDiffusion_att(nn.Module):
+    def __init__(self, model, image_size, timesteps=1000, attention_dim=256, heads=8, sampling_timesteps=None, objective='pred_v',
+                 beta_schedule='sigmoid', schedule_fn_kwargs=dict(), ddim_sampling_eta=0.0, auto_normalize=True,
+                 offset_noise_strength=0.0, min_snr_loss_weight=False, min_snr_gamma=5, immiscible=False):
+        super().__init__()
+        
+        self.model = model
+        self.channels = model.channels
+        self.self_condition = model.self_condition
+        
+        # self.attention = SelfAttention(attention_dim, heads=heads)
+        self.attention = SelfAttention(dim=self.channels, heads=heads)
+        
+        # Image size validation
+        if isinstance(image_size, int):
+            image_size = (image_size, image_size)
+        assert isinstance(image_size, (tuple, list)) and len(image_size) == 2, 'image size must be a tuple or list of two integers'
+        self.image_size = image_size
+
+        # Objective validation
+        assert objective in {'pred_noise', 'pred_x0', 'pred_v'}, 'Invalid objective, choose from pred_noise, pred_x0, pred_v'
+        self.objective = objective
+
+        # Beta schedule setup
+        if beta_schedule == 'linear':
+            beta_schedule_fn = linear_beta_schedule
+        elif beta_schedule == 'cosine':
+            beta_schedule_fn = cosine_beta_schedule
+        elif beta_schedule == 'sigmoid':
+            beta_schedule_fn = sigmoid_beta_schedule
+        else:
+            raise ValueError(f'Unknown beta schedule {beta_schedule}')
+        
+        betas = beta_schedule_fn(timesteps, **schedule_fn_kwargs).float()
+        alphas = (1.0 - betas).float()
+        alphas_cumprod = torch.cumprod(alphas, dim=0).float()
+        alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0).float()
+
+        # Register buffers for diffusion
+        self.num_timesteps = timesteps
+        self.register_buffer('betas', betas)
+        self.register_buffer('alphas_cumprod', alphas_cumprod)
+        self.register_buffer('alphas_cumprod_prev', alphas_cumprod_prev)
+        self.register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod).float())
+        self.register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1.0 - alphas_cumprod).float())
+        self.register_buffer('sqrt_recip_alphas_cumprod', torch.sqrt(1.0 / alphas_cumprod).float())
+        self.register_buffer('sqrt_recipm1_alphas_cumprod', torch.sqrt(1.0 / alphas_cumprod - 1).float())
+
+        # Posterior variance
+        posterior_variance = (betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)).float()
+        self.register_buffer('posterior_variance', posterior_variance)
+        self.register_buffer('posterior_log_variance_clipped', torch.log(posterior_variance.clamp(min=1e-20)).float())
+        self.register_buffer('posterior_mean_coef1', (betas * torch.sqrt(alphas_cumprod_prev) / (1.0 - alphas_cumprod)).float())
+        self.register_buffer('posterior_mean_coef2', ((1.0 - alphas_cumprod_prev) * torch.sqrt(alphas) / (1.0 - alphas_cumprod)).float())
+
+        # Misc settings
+        self.immiscible = immiscible
+        self.offset_noise_strength = offset_noise_strength
+
+        # SNR loss weight setup
+        snr = (alphas_cumprod / (1.0 - alphas_cumprod)).float()
+        maybe_clipped_snr = snr.clone()
+        if min_snr_loss_weight:
+            maybe_clipped_snr.clamp_(max=min_snr_gamma)
+        if objective == 'pred_noise':
+            self.register_buffer('loss_weight', (maybe_clipped_snr / snr).float())
+        elif objective == 'pred_x0':
+            self.register_buffer('loss_weight', maybe_clipped_snr.float())
+        elif objective == 'pred_v':
+            self.register_buffer('loss_weight', (maybe_clipped_snr / (snr + 1)).float())
+
+        # Normalization setup
+        self.normalize = normalize_to_neg_one_to_one if auto_normalize else lambda x: x
+        self.unnormalize = unnormalize_to_zero_to_one if auto_normalize else lambda x: x
+
+    @property
+    def device(self):
+        return self.betas.device
+    
+    @autocast(device_type='cuda', enabled=False)
+    def q_sample(self, x_start, t, noise=None, **kwargs):
+        noise = default(noise, lambda: torch.randn_like(x_start).float())
+        alpha_cumprod = extract(self.sqrt_alphas_cumprod, t, x_start.shape).float()
+        one_minus_alpha_cumprod = extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape).float()
+        
+        # 如果存在 mask，确保 x_start 形状一致
+        mask = kwargs.get('mask', None)
+        if mask is not None:
+            assert mask.shape == x_start.shape, "Mask shape must match input shape"
+            x_start = x_start * mask + noise * (1 - mask)
+
+        # 返回形状 (B, C, H, W)
+        return (alpha_cumprod * x_start + one_minus_alpha_cumprod * noise).reshape(x_start.shape)
+        
+
+
+
+    def p_losses(self, x_start, t, noise=None, offset_noise_strength=None, **kwargs):
+        noise = default(noise, lambda: torch.randn_like(x_start).float())
+        mask = kwargs.get("mask", None)
+
+        # Apply mask if provided
+        if mask is not None:
+            assert mask.shape == x_start.shape, "Mask shape must match input shape"
+            x_start = x_start * mask + noise * (1 - mask)
+
+        
+        # print('x_start',x_start)
+        # Get noisy sample
+        x_noisy = self.q_sample(x_start, t, noise=noise, mask=mask)
+
+        # Apply attention (if exists)
+        if hasattr(self, 'attention'):
+            x_noisy = self.attention(x_noisy)
+
+        # Model prediction
+        x_self_cond = None
+        if self.self_condition and random.random() < 0.5:
+            with torch.no_grad():
+                x_self_cond = self.model_predictions(x_noisy, t).pred_x_start.detach()
+
+        model_out = self.model(x_noisy, t, x_self_cond)
+
+        
+        # print("model_out",model_out)
+
+        # Define target based on objective
+        if self.objective == 'pred_noise':
+            target = noise
+        elif self.objective == 'pred_x0':
+            target = x_start
+        elif self.objective == 'pred_v':
+            target = self.predict_v(x_start, t, noise)
+        else:
+            raise ValueError(f'Unknown objective {self.objective}')
+
+        # Calculate MSE loss
+        mse_loss = F.mse_loss(model_out, target, reduction='none')
+        mse_loss = reduce(mse_loss, 'b ... -> b', 'mean')
+
+        # Add KL divergence loss
+        kl_lambda = 0.8  # You can adjust this value
+        mu_real, sigma_real = x_start.mean(dim=(2, 3)), x_start.std(dim=(2, 3))
+        mu_fake, sigma_fake = model_out.mean(dim=(2, 3)), model_out.std(dim=(2, 3))
+        kl_loss = F.kl_div(mu_fake.log(), mu_real, reduction='batchmean') + \
+                F.kl_div(sigma_fake.log(), sigma_real, reduction='batchmean')
+
+        # Combine losses
+        total_loss = mse_loss + kl_lambda * kl_loss
+        return total_loss.mean()
+
+    
+    
+    def forward(self, img, *args, **kwargs):
+        b, c, h, w, = *img.shape, 
+        device=img.device 
+        img_size =self.image_size
+        assert (h, w) == img_size, f'height and width of image must be {img_size}'
+
+        # Ensure float32 consistency
+        img = img.float()
+        
+        # Random timestep selection
+        t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
+        
+        # Calculate loss
+        loss = self.p_losses(img, t, *args, **kwargs)
+        
+        return loss, img
+
+
+
+
+
+class DPPM_GaussianDiffusion(nn.Module):
+    def __init__(self, model, image_size, timesteps=1000, attention_dim=256, heads=8, sampling_timesteps=None, objective='pred_v',
+                 beta_schedule='sigmoid', schedule_fn_kwargs=dict(), ddim_sampling_eta=0.0, auto_normalize=True,
+                 offset_noise_strength=0.0, min_snr_loss_weight=False, min_snr_gamma=5, immiscible=False, uncertainty=True):
+        super().__init__()
+        
+        self.model = model
+        self.channels = model.channels
+        self.self_condition = model.self_condition
+        self.uncertainty = uncertainty
+        
+        # Self-Attention Layer
+        self.attention = SelfAttention(dim=self.channels, heads=heads)
+        
+        # Image size validation
+        if isinstance(image_size, int):
+            image_size = (image_size, image_size)
+        assert isinstance(image_size, (tuple, list)) and len(image_size) == 2, 'image size must be a tuple or list of two integers'
+        self.image_size = image_size
+
+        # Beta schedule setup
+        if beta_schedule == 'linear':
+            beta_schedule_fn = linear_beta_schedule
+        elif beta_schedule == 'cosine':
+            beta_schedule_fn = cosine_beta_schedule
+        elif beta_schedule == 'sigmoid':
+            beta_schedule_fn = sigmoid_beta_schedule
+        else:
+            raise ValueError(f'Unknown beta schedule {beta_schedule}')
+        
+        betas = beta_schedule_fn(timesteps, **schedule_fn_kwargs).float()
+        alphas = (1.0 - betas).float()
+        alphas_cumprod = torch.cumprod(alphas, dim=0).float()
+        alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0).float()
+
+        # Register buffers for diffusion
+        self.num_timesteps = timesteps
+        self.register_buffer('betas', betas)
+        self.register_buffer('alphas_cumprod', alphas_cumprod)
+        self.register_buffer('alphas_cumprod_prev', alphas_cumprod_prev)
+        self.register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod).float())
+        self.register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1.0 - alphas_cumprod).float())
+        self.register_buffer('sqrt_recip_alphas_cumprod', torch.sqrt(1.0 / alphas_cumprod).float())
+        self.register_buffer('sqrt_recipm1_alphas_cumprod', torch.sqrt(1.0 / alphas_cumprod - 1).float())
+
+        # Posterior variance
+        posterior_variance = (betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)).float()
+        self.register_buffer('posterior_variance', posterior_variance)
+        self.register_buffer('posterior_log_variance_clipped', torch.log(posterior_variance.clamp(min=1e-20)).float())
+        self.register_buffer('posterior_mean_coef1', (betas * torch.sqrt(alphas_cumprod_prev) / (1.0 - alphas_cumprod)).float())
+        self.register_buffer('posterior_mean_coef2', ((1.0 - alphas_cumprod_prev) * torch.sqrt(alphas) / (1.0 - alphas_cumprod)).float())
+
+        # SNR loss weight setup
+        snr = (alphas_cumprod / (1.0 - alphas_cumprod)).float()
+        maybe_clipped_snr = snr.clone()
+        if min_snr_loss_weight:
+            maybe_clipped_snr.clamp_(max=min_snr_gamma)
+        self.register_buffer('loss_weight', (maybe_clipped_snr / snr).float())
+
+        # Normalization setup
+        self.normalize = normalize_to_neg_one_to_one if auto_normalize else lambda x: x
+        self.unnormalize = unnormalize_to_zero_to_one if auto_normalize else lambda x: x
+
+    def q_sample(self, x_start, t, noise=None, **kwargs):
+        noise = default(noise, lambda: torch.randn_like(x_start).float())
+        alpha_cumprod = extract(self.sqrt_alphas_cumprod, t, x_start.shape).float()
+        one_minus_alpha_cumprod = extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape).float()
+        return (alpha_cumprod * x_start + one_minus_alpha_cumprod * noise).reshape(x_start.shape)
+    
+    def uncertainty_estimation(self, x_pred, x_real):
+        """Estimate uncertainty as the variance between predicted and real samples."""
+        if not self.uncertainty:
+            return 0.0
+        # Calculate mean and variance
+        mu_pred, sigma_pred = x_pred.mean(dim=(2, 3)), x_pred.std(dim=(2, 3))
+        mu_real, sigma_real = x_real.mean(dim=(2, 3)), x_real.std(dim=(2, 3))
+        # KL divergence between predicted and real distributions
+        kl_div = F.kl_div(mu_pred.log(), mu_real, reduction='batchmean') + \
+                 F.kl_div(sigma_pred.log(), sigma_real, reduction='batchmean')
+        return kl_div
+
+    def forward(self, x_start, *args, **kwargs):
+        b, c, h, w = x_start.shape
+        t = torch.randint(0, self.num_timesteps, (b,), device=x_start.device).long()
+        noise = torch.randn_like(x_start).float()
+        x_noisy = self.q_sample(x_start, t, noise=noise)
+        # Apply self-attention
+        x_noisy = self.attention(x_noisy)
+        # Model prediction
+        model_out = self.model(x_noisy, t)
+        # Uncertainty estimation
+        uncertainty_loss = self.uncertainty_estimation(model_out, x_start)
+        # Calculate MSE loss
+        mse_loss = F.mse_loss(model_out, x_start, reduction='none')
+        mse_loss = reduce(mse_loss, 'b ... -> b', 'mean')
+        # Combine losses
+        total_loss = mse_loss + 0.8 * uncertainty_loss
+        return total_loss.mean()

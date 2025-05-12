@@ -3,7 +3,7 @@ import torch.nn as nn
 from denoising_diffusion.Diffusion import  ContinuousTimeGaussianDiffusion,DiffusionModule
 
 from denoising_diffusion import GaussianDiffusion
-from UNet import UNet,UNets
+from U_net import UNetb,UNets
 import torch.nn.functional as F
 # #############################
 # # 4. 端到端模型
@@ -13,10 +13,43 @@ import torch.nn.functional as F
 from PIL import Image
 import os
 
+
+
+
+
+
+
+class SimpleUNet(nn.Module):
+    def __init__(self, channels=1):
+        super().__init__()
+        self.random_or_learned_sinusoidal_cond = True  # 需要设置为 True
+        self.self_condition = False  # 必须为 False
+        self.channels = channels
+        
+        self.encoder = nn.Sequential(
+            nn.Conv2d(channels, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU()
+        )
+        self.decoder = nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, channels, kernel_size=3, padding=1)
+        )
+
+    def forward(self, x, t):
+        x = self.encoder(x)
+        x = self.decoder(x)
+        return x
+
+
+
+
 # 定义一个基本的残差块（Residual Block）
-class BasicBlock(nn.Module):
+class BasicBloc(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
-        super(BasicBlock, self).__init__()
+        super(BasicBloc, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1)
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU(inplace=True)
@@ -38,6 +71,159 @@ class BasicBlock(nn.Module):
         out = self.relu(out)
         return out
 
+
+class BasicBlock(nn.Module):
+    def __init__(self, in_planes, planes, stride=1):
+        super(BasicBlock, self).__init__()
+        
+        # ✅ 主路径
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        # ✅ 处理通道不匹配
+        if stride != 1 or in_planes != planes:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes)
+            )
+        else:
+            self.downsample = nn.Identity()
+
+    def forward(self, x):
+        # ✅ 处理残差连接
+        residual = self.downsample(x)
+
+        # 主路径
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        # 残差连接
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+
+class EnhancedBasicBlock(nn.Module):
+    def __init__(self, in_planes, planes, stride=1, downsample=None, use_se=True, use_dropout=True, dropout_rate=0.2):
+        super(EnhancedBasicBlock, self).__init__()
+        
+        # ✅ 主路径
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        # ✅ 检查是否需要下采样
+        if stride != 1 or in_planes != planes:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes)
+            )
+        else:
+            self.downsample = nn.Identity()
+
+        self.use_se = use_se
+        self.use_dropout = use_dropout
+        self.dropout = nn.Dropout2d(p=dropout_rate)
+
+    def forward(self, x):
+        # ✅ 主路径卷积
+        residual = self.downsample(x)  # ✅ 处理通道数和空间尺寸不匹配
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        # ✅ Dropout (可选)
+        if self.use_dropout:
+            out = self.dropout(out)
+
+        # ✅ 残差连接
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+
+
+class ResNetWithDropout(nn.Module):
+    def __init__(self, block, layers, in_channels=1, out_channels=1, dropout_rate=0.5, self_condition=False):
+        super(ResNetWithDropout, self).__init__()
+        
+        self.inplanes = 64
+        self.self_condition = self_condition  # ✅ 添加 self_condition 属性
+        
+        # ✅ 修改输入通道数
+        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        
+        # ✅ ResNet 主干网络
+        self.layer1 = self._make_layer(block, 64, layers[0])
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+        
+        # ✅ 修改输出层
+        self.conv_out = nn.Conv2d(512 * block.expansion, out_channels, kernel_size=1, stride=1, bias=False)
+        self.dropout = nn.Dropout(p=dropout_rate)
+        
+        # ✅ 设置通道属性
+        self.channels = in_channels  # 输入通道数
+        self.out_dim = out_channels  # 输出通道数
+
+    def _make_layer(self, block, planes, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample))
+        self.inplanes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x, self_cond=None):
+        # ✅ 处理 Self-Conditioning
+        if self.self_condition and self_cond is not None:
+            x = torch.cat([x, self_cond], dim=1)
+        
+        # ✅ 前向传播
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        # ✅ 修改输出层
+        x = self.dropout(x)
+        x = self.conv_out(x)
+
+        return x
 
 # 定义ResNet网络
 class ResNet(nn.Module):
@@ -144,7 +330,7 @@ class EndToEndModel(nn.Module):
     
     def forward(self, image, mask):
         # Diffusion 模块：对图像进行背景模糊（突出肿瘤区域）
-        processed_image = self.diffusion(image, mask,)
+        processed_image = self.diffusion(image)
         
         # proc_img = processed_image[0].cpu().detach()  # shape: [1, H, W]
         # proc_img = proc_img.squeeze(0)                # shape: [H, W]

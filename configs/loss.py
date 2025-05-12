@@ -144,6 +144,16 @@ class BCEDiceLoss(nn.Module):
 
 
 
+
+def tversky_loss(pred, target, alpha=0.5, beta=0.5, smooth=1.0):
+    TP = (pred * target).sum(dim=[2, 3])
+    FP = (pred * (1 - target)).sum(dim=[2, 3])
+    FN = ((1 - pred) * target).sum(dim=[2, 3])
+    
+    tversky = (TP + smooth) / (TP + alpha * FP + beta * FN + smooth)
+    return 1 - tversky.mean()
+
+
 # BCE损失
 class BCEWithLogitsLoss(nn.Module):
     def __init__(self):
@@ -156,7 +166,7 @@ class BCEWithLogitsLoss(nn.Module):
 
 # Dice损失
 class DiceLoss_T(nn.Module):
-    def __init__(self, epsilon=1e-6):
+    def __init__(self, epsilon=1e-4):
         super().__init__()
         self.epsilon = epsilon  # 修复点：使用 self.epsilon 而不是 self.smooth
 
@@ -175,12 +185,13 @@ class DiceLoss_T(nn.Module):
 
  # SSIM损失函数
 class SSIMLoss(nn.Module,):
-    def __init__(self, window_size=7, size_average=True):
+    def __init__(self, window_size=7, size_average=True,data_range = 1.0):
         super().__init__()
         self.window_size = window_size
         self.size_average = size_average
         window = self.create_window(window_size)
         self.window = self.create_window(window_size)
+        self.data_range = data_range
         self.window = self.window.expand(1, 1, self.window_size, self.window_size).contiguous()
         # self.register_buffer("window", window)  # ✅ 注册为 buffer
 
@@ -191,6 +202,30 @@ class SSIMLoss(nn.Module,):
         window = torch.ones(1, 1, window_size, window_size)
         return window.to(device)
 
+
+    # def create_window(self, window_size, sigma=1.5):
+    #     # 确保 window_size 是一个 int
+    #     if isinstance(window_size, torch.Tensor):
+    #         if window_size.numel() == 1:  # 只允许单元素 Tensor
+    #             window_size = int(window_size.item())
+    #         else:
+    #             raise ValueError("window_size should be a single integer, not a tensor with multiple elements.")
+        
+    #     # 创建二维高斯窗口
+    #     gauss = torch.tensor([
+    #         math.exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) 
+    #         for x in range(window_size)
+    #     ])
+    #     gauss = gauss / gauss.sum()
+
+    #     # 生成二维高斯核
+    #     window = gauss.unsqueeze(1) @ gauss.unsqueeze(0)  # (window_size, window_size)
+    #     window = window.unsqueeze(0).unsqueeze(0)  # (1, 1, window_size, window_size)
+
+    #     # 将 window 移动到 GPU 或 CPU
+    #     return window.to(self.window.device if hasattr(self, 'window') else 'cpu')
+    
+    
     def gaussian(self, window_size, sigma):
         # 生成高斯滤波器
         gauss = torch.Tensor([math.exp(-(x - window_size // 2)**2 / float(2 * sigma**2)) for x in range(window_size)])
@@ -198,6 +233,9 @@ class SSIMLoss(nn.Module,):
         return gauss
 
     def forward(self, img1, img2):
+        
+        img1 = img1 / self.data_range
+        img2 = img2 / self.data_range
         # 计算SSIM损失
         mu1 = F.conv2d(img1, self.window, padding=3)
         mu2 = F.conv2d(img2, self.window, padding=3)
@@ -205,8 +243,8 @@ class SSIMLoss(nn.Module,):
         sigma2_sq = F.conv2d(img2 * img2, self.window, padding=3) - mu2 * mu2
         sigma12 = F.conv2d(img1 * img2, self.window, padding=3) - mu1 * mu2
 
-        C1 = 0.01**2
-        C2 = 0.03**2
+        C1 = (0.01 ** 2) * self.data_range ** 2
+        C2 = (0.03 ** 2) * self.data_range ** 2
 
         # SSIM公式
         ssim_map = ((2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)) / ((mu1**2 + mu2**2 + C1) * (sigma1_sq + sigma2_sq + C2))
@@ -214,7 +252,7 @@ class SSIMLoss(nn.Module,):
  
 
 class CombinedLoss(nn.Module):
-    def __init__(self, alpha=0.8, beta=0.3, gamma=0.5):
+    def __init__(self, alpha=0.5, beta=0.3, gamma=0.5):
         super().__init__()
         self.bce_loss = BCEWithLogitsLoss()
         self.dice_loss = DiceLoss_T()
@@ -235,7 +273,7 @@ class CombinedLoss(nn.Module):
     
    
 class CombinedLoss_pro(nn.Module):
-    def __init__(self, alpha=0.8, beta=0.3, gamma=0.5, delta=0.3):
+    def __init__(self, alpha=0.5, beta=0.5, gamma=0.5, delta=0.3):
         super().__init__()
         self.bce_loss = BCEWithLogitsLoss()
         self.dice_loss = DiceLoss_T()
@@ -299,7 +337,7 @@ def plot_losses(csv_file, save_path):
     plt.plot(df['Epoch'], df['Train Loss'], label='Train Loss')
     
     if 'Val Loss' in df.columns:
-        plt.plot(df['Epoch'], df['Val Loss'], label='Test Loss')
+        plt.plot(df['Epoch'], df['Val Loss'], label='Val Loss')
     # if 'Dice' in df.columns:
     #     plt.plot(df['Epoch'], df['Dice'], label='Dice Coefficient', linestyle='--') 
 
@@ -336,8 +374,8 @@ def  plot_losses_pros(csv_path, save_path):
     axes[0].grid(True)
 
     # 绘制测试损失（若存在）
-    if 'Test Loss' in df.columns:
-        axes[1].plot(df['Epoch'], df['Val Loss'], color='green', label='Test Loss')
+    if 'Val Loss' in df.columns:
+        axes[1].plot(df['Epoch'], df['Val Loss'], color='green', label='Val Loss')
         axes[1].set_title('Test Loss')
         axes[1].set_xlabel('Epoch')
         axes[1].set_ylabel('Loss')

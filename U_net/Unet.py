@@ -528,3 +528,10 @@ class UNetPlusPlus(nn.Module):
             return [self.outc(x0_1), self.outc(x0_2), self.outc(x0_3), self.outc(x0_4)]
         else:
             return self.outc(x0_4)
+        
+        
+        
+        
+        
+        
+        

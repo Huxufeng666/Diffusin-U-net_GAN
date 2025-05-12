@@ -17,7 +17,7 @@
 
 系统流程图：
 
-![System Architecture](image.png)
+![System Architecture](Architecture.png)
 
 ---
 

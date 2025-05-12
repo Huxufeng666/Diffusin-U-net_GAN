@@ -46,7 +46,7 @@
 | Dataset          | Model                 | Dice Coefficient | IoU    | Pixel Accuracy | Precision | Recall |
 | ---------------- | --------------------- | ---------------- | ------ | -------------- | --------- | ------ |
 |<td rowspan="2">  | **AttUNet**           | 76.14            | 71.25  | 95.60          | 80.25     | 80.17  |
-|**BUSI data**</td>| **Diffusion-AttUNet** | 77.96            | 71.18  | 96.77          | 88.56     | 79.06  |
+|**BUSI data**     | **Diffusion-AttUNet** | 77.96            | 71.18  | 96.77          | 88.56     | 79.06  |
 | **BUS data**     | **AttUNet**           | 78.93            | 69.51  | 96.44          | 82.43     | 80.25  |
 |                  | **Diffusion-AttUNet** | 77.21            | 75.00  | 99.03          | 86.47     | 88.33  |
 | **BUS-BRA data** | **AttUNet**           | 0.893            | 0.823  | 0.980          | 0.909     | 0.906  |
